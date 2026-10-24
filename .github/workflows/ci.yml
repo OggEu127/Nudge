@@ -49,26 +49,22 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
+      - name: Test CI diagnostics
+        if: runner.os == 'Linux'
+        run: node .github/scripts/test-run-tests.cjs
+
       - name: Run tests
         shell: bash
-        run: |
-          set -o pipefail
-          cargo test --locked --workspace --all-features --no-fail-fast 2>&1 | tee test-output.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            if command -v node >/dev/null 2>&1; then
-              node - <<'JS'
-          const fs = require('fs');
-          const text = fs.readFileSync('test-output.log', 'utf8').replace(/\r\n/g, '\n');
-          const index = text.lastIndexOf('failures:\n');
-          const section = index >= 0 ? text.slice(index) : text.slice(-16000);
-          const message = section.split('\n').slice(-200).join('\n')
-            .replace(/%/g, '%25').replace(/\n/g, '%0A');
-          console.log(`::error title=Test failure output::${message.slice(0, 60000)}`);
-          JS
-            fi
-            exit "$status"
-          fi
+        run: bash .github/scripts/run-tests.sh
+
+      - name: Upload test log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-log-${{ matrix.os }}-${{ github.run_attempt }}
+          path: test-output.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Check public API documentation
         if: runner.os == 'Linux'

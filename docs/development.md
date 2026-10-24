@@ -32,6 +32,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 
 Windows PowerShell 设置 rustdoc 参数时使用 `$env:RUSTDOCFLAGS = '-D warnings'`。质量检查失败时修复原因，不删除测试或放宽错误来制造通过结果。
 
+普通 CI 和 Windows 发布构建共用 `.github/scripts/run-tests.sh`。测试失败时保留 Cargo 的退出码，在页面显示包含 panic 详情的错误摘要，并将完整的 `test-output.log` 作为 Actions 附件保留 14 天。没有进入测试步骤时不生成日志；日志写入失败也会使任务失败。Linux CI 另外运行 `node .github/scripts/test-run-tests.cjs`，检查失败输出和退出码不会被日志处理掩盖。
+
 [`cargo doc`](https://doc.rust-lang.org/cargo/commands/cargo-doc.html) 生成的入口在 `target/doc/launcher_core/index.html`，其他领域 crate 也有独立文档。
 
 ## 测试层次
