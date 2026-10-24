@@ -1,0 +1,23 @@
+{
+  "formatVersion": 1,
+  "game": "minecraft",
+  "versionId": "1.0.0",
+  "name": "Nudge Fabric API validation",
+  "summary": "A small acceptance fixture using a pinned public Fabric API release.",
+  "dependencies": {
+    "minecraft": "1.21.5",
+    "fabric-loader": "0.20.1"
+  },
+  "files": [
+    {
+      "path": "mods/fabric-api-0.128.2+1.21.5.jar",
+      "hashes": {
+        "sha1": "920dea0ac4ff08f539099215eace9fda3e3fb2e3",
+        "sha512": "0e42b72d1a63a45c1b64cdabafd15f4d236bbda5521964d687afa1f833d4022f96c7ffab5dd4471aba0190be588f092d156bf14a50b794895fb3286ec899bcf7"
+      },
+      "downloads": ["https://cdn.modrinth.com/data/P7dR8mSH/versions/kKEGlsne/fabric-api-0.128.2%2B1.21.5.jar"],
+      "fileSize": 2248994,
+      "env": { "client": "required", "server": "required" }
+    }
+  ]
+}

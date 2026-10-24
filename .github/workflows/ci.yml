@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Rust quality (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential pkg-config libx11-dev libxi-dev libxcursor-dev \
+            libxrandr-dev libxinerama-dev libgl1-mesa-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libdbus-1-dev
+
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile default --component rustfmt,clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Compile workspace
+        run: cargo check --locked --workspace --all-targets
+
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --workspace --all-features --no-fail-fast 2>&1 | tee test-output.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            if command -v node >/dev/null 2>&1; then
+              node - <<'JS'
+          const fs = require('fs');
+          const text = fs.readFileSync('test-output.log', 'utf8').replace(/\r\n/g, '\n');
+          const index = text.lastIndexOf('failures:\n');
+          const section = index >= 0 ? text.slice(index) : text.slice(-16000);
+          const message = section.split('\n').slice(-200).join('\n')
+            .replace(/%/g, '%25').replace(/\n/g, '%0A');
+          console.log(`::error title=Test failure output::${message.slice(0, 60000)}`);
+          JS
+            fi
+            exit "$status"
+          fi
+
+      - name: Check public API documentation
+        if: runner.os == 'Linux'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --no-deps

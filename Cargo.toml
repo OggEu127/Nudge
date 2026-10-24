@@ -1,0 +1,68 @@
+[workspace]
+members = [
+    "crates/launcher-cli",
+    "crates/launcher-core",
+    "crates/launcher-gui",
+    "crates/launcher-minecraft",
+    "crates/launcher-modpack",
+    "crates/launcher-net",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-only"
+repository = "https://github.com/OggEu127/Nudge"
+authors = ["Nudge contributors"]
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+directories = "6.0.0"
+eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "default_fonts", "glow", "links", "system_fonts", "wayland", "x11"] }
+futures-util = "0.3.31"
+hex = "0.4.3"
+keyring = "4.2.0"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "system-proxy"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+shell-words = "1.1.1"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+url = { version = "2.5.8", features = ["serde"] }
+uuid = { version = "1.26.1", features = ["serde"] }
+zeroize = "1.9.1"
+wiremock = "0.6.5"
+zip = { version = "7.3.0", default-features = false, features = ["deflate"] }
+
+launcher-core = { path = "crates/launcher-core" }
+launcher-gui = { path = "crates/launcher-gui" }
+launcher-minecraft = { path = "crates/launcher-minecraft" }
+launcher-modpack = { path = "crates/launcher-modpack" }
+launcher-net = { path = "crates/launcher-net" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+
+[profile.dev.package.sha1]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
