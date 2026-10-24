@@ -2,15 +2,32 @@
 
 本项目优先 Windows x86-64，架构保留 Linux/macOS 扩展。工作流存在、交叉编译通过、Windows 原生运行正常是三个不同结论，必须分别记录。
 
-本仓库提供构建、打包与发布准备，不等于正式稳定发行已经完成。v0.1.0 首次推送已获维护者授权；自有 Microsoft 应用注册与真实账号、原生 Windows 桌面以及首次远端工作流结果仍需外部验收，正式签名和公开发布仍需单独审核。
+本仓库支持构建、打包和发布开发版，但不代表稳定版已经验收。微软应用注册、真实账号登录和 Windows 桌面运行仍需检查。发布前要先确认版本号、说明和对应提交。
 
 ## 自动构建
 
 `.github/workflows/ci.yml` 对 push、pull request 或手动触发执行 Ubuntu/Windows Stable 质量检查，包括格式、编译、严格 Clippy 和测试；Linux 另验证 rustdoc。
 
-`.github/workflows/windows-portable.yml` 在手动触发或推送 `v*` 标签时，在 Windows runner 原生构建 `x86_64-pc-windows-msvc` Release，先执行格式、全目标编译检查、Clippy、测试及 CLI 基础运行检查，再上传便携 ZIP 与 SHA-256。
+`.github/workflows/windows-portable.yml` 在手动触发或推送 `v*` 标签时，在 Windows runner 原生构建 `x86_64-pc-windows-msvc` Release，先执行格式、全目标编译检查、Clippy、测试及 CLI 基础运行检查，再打包便携 ZIP 与 SHA-256。
 
-工作流依赖固定为完整 commit SHA，仓库权限只有 `contents: read`。包构建不会推送代码、创建标签或 GitHub Release；需要仓库维护者另行审核和发布。手动触发和标签事件遵循 [GitHub Actions 触发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)，产物使用官方 [upload-artifact](https://github.com/actions/upload-artifact) 保存，默认 14 天。
+两种触发方式的区别：
+
+- 手动运行（包括选择已有标签运行）：只上传 Actions 构建产物，保留 14 天，不创建或修改 Release。
+- 推送版本标签：构建成功后，单独的发布任务下载本次产物，核对文件名和 SHA-256，再把 ZIP 和 `.zip.sha256` 上传到同名 GitHub Release。Release 附件不受 Actions 的 14 天保留期影响。
+
+构建任务只有 `contents: read`；发布任务才有 `contents: write`，使用 GitHub 自动提供的短期 `GITHUB_TOKEN`，不用额外配置个人令牌。Action 依赖固定为完整 commit SHA。发布流程使用官方 [download-artifact](https://github.com/actions/download-artifact) 和 [GitHub CLI](https://cli.github.com/manual/gh_release_create)。
+
+## 发布一个版本
+
+1. 确认工作区版本号、发布说明和对应提交，先把代码推送到远程。
+2. 经维护者确认后，创建并推送相同版本的标签，例如 Cargo 版本 `0.1.0` 对应 `v0.1.0`。标签和 Cargo 版本不一致会阻止发布。
+3. 等待 Windows 构建、测试和发布任务通过，在仓库的 Releases 页面下载便携包和校验文件。
+
+普通 `main` 分支推送不会触发发布；工作流也不会替维护者创建或推送标签。当前公开版本统一标记为预发布，不设为 Latest，说明中注明未签名和待验收事项。检查通过后才上传附件，上传完成后才公开草稿，避免用户看到缺少应用的版本。
+
+若同名 Release 已存在，任务会失败，不会覆盖已有附件或改写发布说明。上传或公开失败时可能留下草稿，需要检查失败原因和草稿内容；清理或修改远程草稿仍须维护者确认，不能直接强制重跑覆盖已有版本。
+
+这里只配置流程；文件修改或代码推送不表示已有新版本发布。实际打标签和公开发布需另行确认。
 
 ## 便携包内容
 

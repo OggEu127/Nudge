@@ -6,8 +6,8 @@ on:
     tags:
       - 'v*'
 
-# This workflow creates build artifacts only. It never creates a GitHub Release,
-# pushes a commit/tag, or needs repository write permissions.
+# Builds keep read-only permissions. Only the tag-triggered publishing job can
+# create a Release; manual runs never publish or create/push tags.
 permissions:
   contents: read
 
@@ -106,3 +106,69 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  publish-release:
+    name: Publish Windows release
+    needs: windows-x64
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download this run's Windows package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Nudge-windows-x86_64-${{ github.sha }}
+          path: target/portable
+          digest-mismatch: error
+
+      - name: Verify release files
+        working-directory: target/portable
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo 'Invalid release tag' >&2
+            exit 1
+          fi
+          archive="Nudge-${RELEASE_TAG#v}-windows-x86_64.zip"
+          test -s "$archive"
+          test -s "$archive.sha256"
+          # Match exactly this ZIP, not another file named in the checksum file.
+          expected="$(sha256sum -- "$archive")"
+          actual="$(tr -d '\r' < "$archive.sha256")"
+          if [[ "$actual" != "$expected" ]]; then
+            echo 'Release ZIP checksum or filename does not match' >&2
+            exit 1
+          fi
+          sha256sum --check --strict "$archive.sha256"
+
+      - name: Publish package and checksum
+        working-directory: target/portable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="Nudge-${RELEASE_TAG#v}-windows-x86_64.zip"
+          printf '%s\n' \
+            'Windows 64 位便携版。下载 ZIP，解压后运行 nudge-gui.exe。' \
+            '' \
+            '附 SHA-256 校验文件。游戏需要自行安装对应版本的 Java。' \
+            '这是未签名的开发版，仍需 Windows 桌面和真实游戏验收。' \
+            '' \
+            "源码：https://github.com/$GH_REPO/tree/$SOURCE_COMMIT" \
+            > release-notes.md
+          # Do not create missing tags or replace an existing Release/assets.
+          # A failed upload leaves an unpublished draft for manual inspection.
+          gh release create "$RELEASE_TAG" "$archive" "$archive.sha256" \
+            --verify-tag --draft --prerelease --latest=false \
+            --title "Nudge $RELEASE_TAG" --notes-file release-notes.md
+          gh release edit "$RELEASE_TAG" --draft=false --latest=false
