@@ -1,11 +1,19 @@
-# Nudge
+<!-- markdownlint-disable MD033 MD041 -->
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/branding/nudge-lockup-blue-violet-dark.png">
+    <img src="assets/branding/nudge-lockup-blue-violet.png" alt="Nudge — Minecraft Java 版启动器" width="420" height="135">
+  </picture>
+</h1>
 
-[![CI status](https://img.shields.io/github/actions/workflow/status/OggEu127/Nudge/ci.yml?branch=main&label=CI&logo=github)](https://github.com/OggEu127/Nudge/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FOggEu127%2FNudge%2Fmain%2FCargo.toml&query=%24.workspace.package.version&label=version&color=blue)](https://github.com/OggEu127/Nudge/blob/main/Cargo.toml)
-[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue)](https://github.com/OggEu127/Nudge/blob/main/LICENSE)
-[![Rust MSRV](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FOggEu127%2FNudge%2Fmain%2FCargo.toml&query=%24.workspace.package.rust-version&label=MSRV&color=orange&logo=rust&suffix=%2B)](https://github.com/OggEu127/Nudge/blob/main/Cargo.toml)
-[![Platform: Linux smoke-tested, Windows cross-compiled](https://img.shields.io/badge/platform-Linux%20smoke--tested%20%7C%20Windows%20cross--compiled-lightgrey)](https://github.com/OggEu127/Nudge/blob/main/docs/verification.md)
-[![UI language: Simplified Chinese](https://img.shields.io/badge/UI-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue)](https://github.com/OggEu127/Nudge/blob/main/docs/verification.md)
+<p align="center">
+  <a href="https://github.com/OggEu127/Nudge/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/OggEu127/Nudge/ci.yml?branch=main&label=CI&logo=github" alt="CI status"></a>
+  <a href="https://github.com/OggEu127/Nudge/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FOggEu127%2FNudge%2Fmain%2FCargo.toml&query=%24.workspace.package.version&label=version&color=blue" alt="Version"></a>
+  <a href="https://github.com/OggEu127/Nudge/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue" alt="License: GPL-3.0-only"></a>
+  <a href="https://github.com/OggEu127/Nudge/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FOggEu127%2FNudge%2Fmain%2FCargo.toml&query=%24.workspace.package.rust-version&label=MSRV&color=orange&logo=rust&suffix=%2B" alt="Rust MSRV"></a>
+  <a href="https://github.com/OggEu127/Nudge/blob/main/docs/verification.md"><img src="https://img.shields.io/badge/platform-Linux%20smoke--tested%20%7C%20Windows%20cross--compiled-lightgrey" alt="Platform: Linux smoke-tested, Windows cross-compiled"></a>
+  <a href="https://github.com/OggEu127/Nudge/blob/main/docs/verification.md"><img src="https://img.shields.io/badge/UI-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue" alt="UI language: Simplified Chinese"></a>
+</p>
 
 用 Rust 写的 Minecraft Java 版启动器，支持原版、Fabric 和本地 MRPACK，提供 CLI 与简体中文桌面界面。
 
@@ -20,7 +28,8 @@
 - **下载与恢复**：有界并发、校验缓存、备用源、重试、取消、SQLite 任务恢复和条件 Range 续传。
 - **实例管理**：隔离目录、完整性校验、安装锁和断点恢复，并管理启动后的子进程。
 - **Microsoft 登录**：设备码授权、令牌刷新、Java 权限与档案检查；刷新令牌只写入系统凭据库。真实账号测试需要自行配置应用 ID。
-- **桌面界面**：基于 egui/eframe，包含实例、整合包、任务、日志、账号、设置和启动。
+- **离线账户**：本地玩家名称生成确定性 UUID，不收集密码、不保存任何微软凭据，也不会伪装成正版授权。
+- **桌面界面**：基于 egui/eframe 的纯白 Liquid Glass 风格，包含实例卡片、模组/资源包/存档浏览、整合包导入、版本下载、任务日志、设置与启动。
 
 ## 暂不支持
 
@@ -53,7 +62,7 @@ target/debug/nudge launch my-pack --demo --java /path/to/java
 
 ## 验证
 
-当前质量门包括格式检查、全目标编译、严格 Clippy、工作区测试和 rustdoc。2026-10-24 在 Linux 上运行了 118 项测试，0 失败；命令与已知限制见[开发指南](docs/development.md)。真实账号、Windows 原生桌面和音频/高 DPI 仍需人工验收。
+当前质量门包括格式检查、全目标编译、严格 Clippy、工作区测试和 rustdoc。2026-10-24 在 Linux 上运行了 135 项测试，0 失败；命令与已知限制见[开发指南](docs/development.md)。真实账号、Windows 原生桌面和音频/高 DPI 仍需人工验收。
 
 ## 参考与致谢
 

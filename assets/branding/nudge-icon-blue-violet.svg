@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" shape-rendering="crispEdges">
+<title>nudge — pixel launcher icon</title>
+<polygon points="5,3 19,3 19,5 22,5 22,19 20,19 20,22 5,22 5,20 3,20 3,6 5,6" fill="#BBB7FF"/>
+<polygon points="5,2 19,2 19,4 21,4 21,6 22,6 22,18 20,18 20,20 5,20 5,18 3,18 3,6 5,6" fill="#404EC7"/>
+<polygon points="5,2 19,2 19,4 7,4 7,6 5,6" fill="#7A81EF"/>
+<rect x="3" y="6" width="2" height="12" fill="#5F6AE2"/>
+<rect x="5" y="18" width="15" height="2" fill="#2F3DA4"/>
+<rect x="20" y="6" width="2" height="12" fill="#3037A5"/>
+<rect x="17" y="5" width="2" height="2" fill="#D9D5FF"/>
+<rect x="19" y="7" width="1" height="1" fill="#FCE6FF"/>
+<rect x="17" y="8" width="1" height="1" fill="#AA9BFF"/>
+<rect x="7" y="10" width="3" height="8" fill="#746EE8"/>
+<rect x="9" y="9" width="6" height="3" fill="#746EE8"/>
+<rect x="14" y="11" width="3" height="7" fill="#746EE8"/>
+<rect x="7" y="8" width="3" height="9" fill="#F7F5FF"/>
+<rect x="10" y="8" width="4" height="3" fill="#F7F5FF"/>
+<rect x="14" y="10" width="3" height="7" fill="#F7F5FF"/>
+<rect x="10" y="9" width="4" height="2" fill="#CFC6FF"/>
+<rect x="7" y="8" width="3" height="2" fill="#FFFFFF"/>
+<rect x="14" y="10" width="3" height="2" fill="#DFD9FF"/>
+<rect x="7" y="17" width="3" height="1" fill="#B8A8FA"/>
+<rect x="14" y="17" width="3" height="1" fill="#A493EE"/>
+</svg>

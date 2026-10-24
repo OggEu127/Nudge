@@ -34,6 +34,16 @@ nudge account logout MINECRAFT_PROFILE_UUID
 
 退出只删除本地刷新凭据与公开账号记录，不等同于撤销微软所有设备的会话。要全局管理授权，请使用微软账号的官方安全/应用授权页面。
 
+## 离线账户
+
+Nudge 也支持本地离线身份，用于没有 Microsoft 账号时的单人或局域网游戏。桌面界面左下角的账户按钮是唯一入口：弹窗中并列提供「添加微软」「添加离线」和已有账户切换，不会同时显示两个独立的登录按钮。
+
+- 名称需要 1–16 位 ASCII 字母、数字或下划线；按 Java 的 `OfflinePlayer:<name>` 规则生成确定性 UUID。
+- 不收集密码，不请求 Microsoft/Xbox/Minecraft 服务，也没有刷新令牌；离线账户只在本地 SQLite 中保存公开身份。
+- 启动时标记为 `legacy` 身份，不会被描述为已通过正版认证，也不代表拥有 Minecraft Java 版。
+- 同一名称在本地已存在其他账户时拒绝创建，避免身份混淆；删除账户不影响游戏文件。
+- 多人服务器会按服务器自己的验证规则处理离线身份，Nudge 不承诺服务器接受该身份。
+
 ## 协议与检查顺序
 
 ```text
@@ -50,7 +60,7 @@ nudge account logout MINECRAFT_PROFILE_UUID
 
 设备授权遵循服务器的过期时间和轮询间隔，处理 `authorization_pending`、`slow_down`、拒绝、过期、取消等分支；不会把非成功响应当作已登录。`slow_down` 增加轮询间隔，见 [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)。当前请求范围按 [Xbox 官方资源说明](https://learn.microsoft.com/en-us/gaming/gdk/docs/services/fundamentals/s2s-auth-calls/service-authentication/live-website-authentication?view=gdk-2604)使用 `XboxLive.signin XboxLive.offline_access`，不混用其他资源 scope，不使用账号密码或客户端密钥。
 
-每次正常启动重新通过刷新凭据获取身份，再核对 Java 版权限与所选档案 UUID。不提供无有效凭据的正版“离线绕过”。微软轮换刷新令牌后优先持久化新值，避免后续权限检查临时失败使已消耗的旧令牌无法恢复。
+每次正常启动重新通过刷新凭据获取身份，再核对 Java 版权限与所选档案 UUID。微软流程不提供无有效凭据的正版“离线绕过”；离线账户是明确标注的本地身份，不参加上述检查，也不会被当作已授权账号。微软轮换刷新令牌后优先持久化新值，避免后续权限检查临时失败使已消耗的旧令牌无法恢复。
 
 Minecraft launcher/entitlement/profile 的完整公开稳定契约并不与 OAuth 文档一起提供。适配器当前采用 `/launcher/login`、`/entitlements/license` 和 `/minecraft/profile`；行为研究参考 [Prism Launcher 的 launcher 登录调用](https://github.com/PrismLauncher/PrismLauncher/blob/develop/launcher/minecraft/auth/steps/LauncherLoginStep.cpp)及[权限调用](https://github.com/PrismLauncher/PrismLauncher/blob/develop/launcher/minecraft/auth/steps/EntitlementsStep.cpp)，独立实现，不将社区实现冒称微软官方格式规范。未识别的结构、无 Java 权限或档案变化均拒绝生成启动身份；接口变化需重新核验。
 

@@ -1,6 +1,11 @@
 /target/
 /.idea/
 /.vscode/
+/nudge-logo-blue-violet-assets.zip
+/nudge.exe
+/nudge-gui.exe
+/Nudge-*-windows-x86_64-portable.zip
+/Nudge-*-windows-x86_64-portable.zip.sha256
 *.log
 *.tmp
 .DS_Store

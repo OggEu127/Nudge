@@ -35,6 +35,8 @@ const OUTPUT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// This type does not claim to authenticate or verify ownership. Real account
 /// construction requires an existing, nonempty Microsoft Minecraft token.
 /// [`Self::demo`] is usable only with the explicit official demo option.
+/// [`Self::offline`] is a local-only identity and must never be described as
+/// Microsoft-authenticated.
 #[derive(Clone)]
 pub struct LaunchIdentity {
     profile_name: String,
@@ -43,6 +45,7 @@ pub struct LaunchIdentity {
     xuid: String,
     client_id: String,
     demo: bool,
+    offline: bool,
 }
 
 impl fmt::Debug for LaunchIdentity {
@@ -55,6 +58,7 @@ impl fmt::Debug for LaunchIdentity {
             .field("xuid", &"[REDACTED]")
             .field("client_id", &"[REDACTED]")
             .field("demo", &self.demo)
+            .field("offline", &self.offline)
             .finish()
     }
 }
@@ -94,7 +98,24 @@ impl LaunchIdentity {
             xuid: String::new(),
             client_id: String::new(),
             demo: false,
+            offline: false,
         })
+    }
+
+    /// Creates a local-only offline identity for a deterministic player UUID.
+    ///
+    /// This does **not** authenticate an account, demonstrate ownership, or
+    /// grant online-server access. The caller is responsible for showing the
+    /// account as offline in the interface. Launching uses Minecraft's standard
+    /// legacy user type and a dummy token.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid player names or the nil UUID.
+    pub fn offline(profile_name: String, uuid: Uuid) -> Result<Self, Error> {
+        let mut identity = Self::new(profile_name, uuid, "0".to_owned())?;
+        identity.offline = true;
+        Ok(identity)
     }
 
     /// Creates an unauthenticated context restricted to Minecraft's `--demo` mode.
@@ -109,6 +130,7 @@ impl LaunchIdentity {
             xuid: String::new(),
             client_id: String::new(),
             demo: true,
+            offline: false,
         }
     }
 
@@ -287,6 +309,11 @@ pub fn build_launch_spec(
             "demo identity requires explicit official demo mode".to_owned(),
         ));
     }
+    if identity.offline && options.demo {
+        return Err(Error::InvalidMetadata(
+            "an offline identity cannot be combined with official demo mode".to_owned(),
+        ));
+    }
     if options.min_memory_mib == 0 || options.max_memory_mib < options.min_memory_mib {
         return Err(Error::InvalidMetadata(
             "heap settings require 0 < minimum <= maximum MiB".to_owned(),
@@ -353,7 +380,12 @@ pub fn build_launch_spec(
         ),
         (
             "user_type",
-            if identity.demo { "legacy" } else { "msa" }.to_owned(),
+            if identity.demo || identity.offline {
+                "legacy"
+            } else {
+                "msa"
+            }
+            .to_owned(),
         ),
         ("user_properties", "{}".to_owned()),
         ("auth_xuid", identity.xuid.clone()),
@@ -875,6 +907,62 @@ mod tests {
         assert_eq!(args[position + 1], game.as_os_str());
         assert!(!format!("{spec:?}").contains("secret-access-token"));
         assert!(!format!("{user:?}").contains("secret-access-token"));
+    }
+
+    #[test]
+    fn offline_identity_uses_legacy_authentication_without_demo_mode() {
+        let metadata = parse_version_metadata(br#"{
+            "id":"test","mainClass":"net.minecraft.client.main.Main",
+            "minecraftArguments":"--userType ${user_type} --accessToken ${auth_access_token} --xuid ${auth_xuid} --clientId ${clientid}"
+        }"#).expect("fixture metadata");
+        let directory = std::env::temp_dir();
+        let offline = LaunchIdentity::offline("OfflinePlayer".to_owned(), uuid::Uuid::from_u128(7))
+            .expect("offline identity");
+        let spec = build_launch_spec(
+            &metadata,
+            &resolved(),
+            &directory,
+            &directory,
+            &directory,
+            &offline,
+            &LaunchOptions::default(),
+        )
+        .expect("offline launch specification");
+        let arguments = spec
+            .arguments()
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for pair in [
+            ["--userType", "legacy"],
+            ["--accessToken", "0"],
+            ["--xuid", ""],
+            ["--clientId", ""],
+        ] {
+            let position = arguments
+                .iter()
+                .position(|value| value == pair[0])
+                .expect("authentication argument");
+            assert_eq!(arguments[position + 1], pair[1]);
+        }
+        assert!(!arguments.iter().any(|value| value == "--demo"));
+        assert!(
+            build_launch_spec(
+                &metadata,
+                &resolved(),
+                &directory,
+                &directory,
+                &directory,
+                &offline,
+                &LaunchOptions {
+                    demo: true,
+                    ..LaunchOptions::default()
+                },
+            )
+            .is_err()
+        );
+        assert!(LaunchIdentity::offline("bad name".to_owned(), uuid::Uuid::from_u128(8)).is_err());
+        assert!(LaunchIdentity::offline("OfflinePlayer".to_owned(), uuid::Uuid::nil()).is_err());
     }
 
     #[test]

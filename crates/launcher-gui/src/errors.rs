@@ -92,6 +92,8 @@ fn auth_summary(error: &auth::Error) -> String {
         auth::Error::ProfileMismatch => "账号身份与已保存的游戏档案不一致，请重新登录。",
         auth::Error::ApplicationChanged => "该账号属于另一应用标识，请先退出账号再更换应用注册。",
         auth::Error::AccountMissing(_) => "所选账号已不存在，请重新选择或登录。",
+        auth::Error::OfflineName => "离线玩家名称需要 1–16 位 ASCII 字母、数字或下划线。",
+        auth::Error::OfflineConflict => "已有其他本地账户使用该离线玩家名称，请换一个名称。",
         auth::Error::CredentialStore(_) => {
             "系统凭据管理器不可用或尚未解锁。请启用并解锁后重试，不会回退到明文存储。"
         }

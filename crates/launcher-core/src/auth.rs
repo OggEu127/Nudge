@@ -16,6 +16,7 @@ use std::{
 
 use launcher_minecraft::launch::LaunchIdentity;
 use launcher_net::api::{ApiClient, ApiResponse};
+use md5::{Digest as _, Md5};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha1::{Digest as _, Sha1};
@@ -73,6 +74,12 @@ pub enum Error {
     /// No matching account is saved.
     #[error("account {0} is not saved")]
     AccountMissing(Uuid),
+    /// An offline player name is not a valid Minecraft username.
+    #[error("offline player names must contain 1–16 ASCII letters, digits, or underscores")]
+    OfflineName,
+    /// A different local account already uses this player name or UUID.
+    #[error("another local account already uses this offline player name")]
+    OfflineConflict,
     /// The OS credential store is absent, locked, or rejected the operation.
     #[error(
         "cannot {0} the system credential store; unlock or configure it (no plaintext fallback)"
@@ -101,6 +108,33 @@ pub enum Error {
     Network(#[from] launcher_net::api::Error),
 }
 
+/// How a local account can obtain a launch identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountKind {
+    /// A Microsoft-authorized Minecraft profile with a token in the OS vault.
+    Microsoft,
+    /// A local-only identity that has never been authenticated by Microsoft.
+    Offline,
+}
+
+impl AccountKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Microsoft => "microsoft",
+            Self::Offline => "offline",
+        }
+    }
+
+    fn from_database(value: &str) -> Result<Self, Error> {
+        match value {
+            "microsoft" => Ok(Self::Microsoft),
+            "offline" => Ok(Self::Offline),
+            _ => Err(Error::InvalidResponse("saved account kind")),
+        }
+    }
+}
+
 /// Nonsecret account metadata, safe to display or persist in SQLite.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Account {
@@ -108,7 +142,9 @@ pub struct Account {
     pub id: Uuid,
     /// Current Minecraft profile name.
     pub name: String,
-    /// Publisher's registered Microsoft public application ID.
+    /// Microsoft-authorized account or a local-only offline identity.
+    pub kind: AccountKind,
+    /// Publisher's registered Microsoft public application ID; empty offline.
     pub client_id: String,
 }
 
@@ -311,30 +347,77 @@ impl<S: CredentialStore> AuthService<S> {
     /// Returns safe-path, database, or stored-metadata validation failures.
     pub async fn accounts(&self) -> Result<Vec<Account>, Error> {
         self.database(|connection| {
-            let mut statement =
-                connection.prepare("SELECT id, name, client_id FROM accounts ORDER BY name, id")?;
+            let mut statement = connection
+                .prepare("SELECT id, name, client_id, kind FROM accounts ORDER BY name, id")?;
             let rows = statement.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()
         })
         .await?
         .into_iter()
-        .map(|(id, name, client_id)| {
+        .map(|(id, name, client_id, kind)| {
             let id = Uuid::parse_str(&id)
                 .map_err(|_| Error::InvalidResponse("saved account metadata"))?;
-            validate_account(id, &name, &client_id)?;
+            let kind = AccountKind::from_database(&kind)?;
+            validate_account(id, &name, kind, &client_id)?;
             Ok(Account {
                 id,
                 name,
+                kind,
                 client_id,
             })
         })
         .collect()
+    }
+
+    /// Creates or returns a local offline identity.
+    ///
+    /// Offline identities are neither authorized nor ownership-checked by
+    /// Microsoft. They use Minecraft's standard deterministic offline UUID so
+    /// the same player name maps to the same UUID across launchers. Repeating a
+    /// name with identical casing returns the existing offline account.
+    ///
+    /// # Errors
+    /// Rejects invalid names, conflicting local accounts, cancellation, or
+    /// database failures. It never writes a refresh token.
+    pub async fn add_offline(
+        &self,
+        name: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Account, Error> {
+        let name = validate_offline_name(name)?;
+        let _guard = self.lock(cancel).await?;
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let id = offline_uuid(&name);
+        let accounts = self.accounts().await?;
+        if let Some(existing) = accounts
+            .iter()
+            .find(|account| account.kind == AccountKind::Offline && account.id == id)
+        {
+            return Ok(existing.clone());
+        }
+        if accounts.iter().any(|account| {
+            account.kind == AccountKind::Offline && account.name.eq_ignore_ascii_case(&name)
+        }) || accounts.iter().any(|account| account.id == id)
+        {
+            return Err(Error::OfflineConflict);
+        }
+        let account = Account {
+            id,
+            name,
+            kind: AccountKind::Offline,
+            client_id: String::new(),
+        };
+        self.save_account(&account).await?;
+        Ok(account)
     }
 
     /// Starts a user-initiated Microsoft public-client device login.
@@ -397,6 +480,7 @@ impl<S: CredentialStore> AuthService<S> {
         let account = Account {
             id: session.id,
             name: session.name,
+            kind: AccountKind::Microsoft,
             client_id: authorization.client_id,
         };
         if self
@@ -436,8 +520,16 @@ impl<S: CredentialStore> AuthService<S> {
         id: Uuid,
         cancel: &CancellationToken,
     ) -> Result<LaunchIdentity, Error> {
+        let account = self.account(id).await?;
+        if account.kind == AccountKind::Offline {
+            return LaunchIdentity::offline(account.name, account.id)
+                .map_err(|_| Error::InvalidResponse("offline player identity"));
+        }
         let _guard = self.lock(cancel).await?;
         let account = self.account(id).await?;
+        if account.kind != AccountKind::Microsoft {
+            return Err(Error::InvalidResponse("saved account kind changed"));
+        }
         let refresh = self.store.read(self.credential_key(&account)).await?;
         if !valid_secret(&refresh) {
             return Err(Error::ReauthenticationRequired);
@@ -496,7 +588,9 @@ impl<S: CredentialStore> AuthService<S> {
     pub async fn logout(&self, id: Uuid) -> Result<(), Error> {
         let _guard = self.lock(&CancellationToken::new()).await?;
         let account = self.account(id).await?;
-        self.store.delete(self.credential_key(&account)).await?;
+        if account.kind == AccountKind::Microsoft {
+            self.store.delete(self.credential_key(&account)).await?;
+        }
         let text = id.to_string();
         self.database(move |connection| {
             connection
@@ -662,11 +756,11 @@ impl<S: CredentialStore> AuthService<S> {
     }
 
     async fn save_account(&self, account: &Account) -> Result<(), Error> {
-        validate_account(account.id, &account.name, &account.client_id)?;
+        validate_account(account.id, &account.name, account.kind, &account.client_id)?;
         let account = account.clone();
         self.database(move |connection| connection.execute(
-            "INSERT INTO accounts (id, name, client_id) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET name=excluded.name, client_id=excluded.client_id",
-            params![account.id.to_string(), account.name, account.client_id],
+            "INSERT INTO accounts (id, name, client_id, kind) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(id) DO UPDATE SET name=excluded.name, client_id=excluded.client_id, kind=excluded.kind",
+            params![account.id.to_string(), account.name, account.client_id, account.kind.as_str()],
         ).map(|_| ())).await
     }
 
@@ -694,14 +788,46 @@ impl<S: CredentialStore> AuthService<S> {
                 connection.busy_timeout(Duration::from_secs(5))?;
                 connection.pragma_update(None, "journal_mode", "WAL")?;
                 connection.pragma_update(None, "synchronous", "FULL")?;
-                let schema: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                if schema > 1 { return Err(rusqlite::Error::InvalidQuery); }
-                connection.execute_batch("CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, client_id TEXT NOT NULL); PRAGMA user_version=1;")?;
+                migrate_accounts(&mut connection)?;
                 operation(&mut connection)
             })();
             result.map_err(|source| Error::Database { path, source })
-        }).await.map_err(|_| Error::Worker)?
+        })
+        .await
+        .map_err(|_| Error::Worker)?
     }
+}
+
+fn migrate_accounts(connection: &mut Connection) -> rusqlite::Result<()> {
+    let schema: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if schema == 2 {
+        return Ok(());
+    }
+    // BEGIN IMMEDIATE serializes all coordinators/processes, including public
+    // account-list calls that do not own the refresh-rotation file lease.
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let schema: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if schema > 2 {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    transaction.execute_batch("CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, client_id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'microsoft');")?;
+    let has_kind = {
+        let mut statement = transaction.prepare("PRAGMA table_info(accounts)")?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        columns
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|column| column == "kind")
+    };
+    if !has_kind {
+        transaction.execute(
+            "ALTER TABLE accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'microsoft'",
+            [],
+        )?;
+    }
+    transaction.pragma_update(None, "user_version", 2)?;
+    transaction.commit()
 }
 
 fn validate_client_id(value: &str) -> Result<String, Error> {
@@ -712,22 +838,43 @@ fn validate_client_id(value: &str) -> Result<String, Error> {
     Ok(id.hyphenated().to_string())
 }
 
-fn validate_account(id: Uuid, name: &str, client_id: &str) -> Result<(), Error> {
-    validate_client_id(client_id)?;
+fn validate_account(id: Uuid, name: &str, kind: AccountKind, client_id: &str) -> Result<(), Error> {
+    if kind == AccountKind::Microsoft {
+        validate_client_id(client_id)?;
+    } else if !client_id.is_empty() {
+        return Err(Error::InvalidResponse("offline account metadata"));
+    }
     validate_profile(id, name)
 }
 
 fn validate_profile(id: Uuid, name: &str) -> Result<(), Error> {
-    if id.is_nil()
-        || name.is_empty()
-        || name.len() > 16
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-    {
+    if id.is_nil() || !valid_player_name(name) {
         return Err(Error::InvalidResponse("Minecraft profile"));
     }
     Ok(())
+}
+
+fn valid_player_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 16
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn validate_offline_name(name: &str) -> Result<String, Error> {
+    if !valid_player_name(name) {
+        return Err(Error::OfflineName);
+    }
+    Ok(name.to_owned())
+}
+
+/// Standard Java `UUID.nameUUIDFromBytes("OfflinePlayer:<name>")` construction.
+fn offline_uuid(name: &str) -> Uuid {
+    let mut digest = Md5::digest(format!("OfflinePlayer:{name}").as_bytes());
+    digest[6] = (digest[6] & 0x0f) | 0x30;
+    digest[8] = (digest[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(digest.into())
 }
 
 async fn safe_regular_path(path: &Path) -> Result<(), Error> {
@@ -1095,6 +1242,7 @@ mod tests {
         let account = Account {
             id: Uuid::parse_str(PROFILE).map_err(|_| Error::Worker)?,
             name: "NudgePlayer".into(),
+            kind: AccountKind::Microsoft,
             client_id: APP.into(),
         };
         auth.save_account(&account).await?;
@@ -1105,6 +1253,124 @@ mod tests {
             )
             .await?;
         Ok(account)
+    }
+
+    #[tokio::test]
+    async fn offline_accounts_use_standard_uuids_and_never_official_credentials() -> TestResult {
+        let server = MockServer::start().await;
+        let root = tempfile::tempdir()?;
+        let store = MemoryStore::default();
+        let auth = service(root.path(), &server, store.clone())?;
+        store.fail_delete.store(true, Ordering::SeqCst);
+        let cancel = CancellationToken::new();
+        let account = auth.add_offline("Notch", &cancel).await?;
+        assert_eq!(
+            account.id.to_string(),
+            "b50ad385-829d-3141-a216-7e7d7539ba7f"
+        );
+        assert_eq!(account.kind, AccountKind::Offline);
+        assert_eq!(account.client_id, "");
+        assert_eq!(auth.accounts().await?, vec![account.clone()]);
+        // Repeating the same casing selects the existing deterministic identity.
+        assert_eq!(auth.add_offline("Notch", &cancel).await?, account);
+        assert!(matches!(
+            auth.add_offline("notch", &cancel).await,
+            Err(Error::OfflineConflict)
+        ));
+        assert!(matches!(
+            auth.add_offline("bad name", &cancel).await,
+            Err(Error::OfflineName)
+        ));
+        let identity = auth.identity(account.id, &cancel).await?;
+        assert!(!format!("{identity:?}").contains("OfflinePlayer"));
+        // Offline logout must not depend on the OS credential store.
+        auth.logout(account.id).await?;
+        assert_eq!(auth.accounts().await?, Vec::<Account>::new());
+        assert!(
+            server
+                .received_requests()
+                .await
+                .ok_or("missing recorder")?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_version_one_migrations_preserve_accounts() -> TestResult {
+        const WORKERS: usize = 12;
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("accounts.sqlite3");
+        let connection = Connection::open(&path)?;
+        connection.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE accounts (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, client_id TEXT NOT NULL); PRAGMA user_version=1;")?;
+        connection.execute(
+            "INSERT INTO accounts (id, name, client_id) VALUES (?1, 'NudgePlayer', ?2)",
+            params![PROFILE, APP],
+        )?;
+        drop(connection);
+        let connections = (0..WORKERS)
+            .map(|_| {
+                let connection = Connection::open(&path)?;
+                connection.busy_timeout(Duration::from_secs(5))?;
+                Ok(connection)
+            })
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let barrier = Arc::new(std::sync::Barrier::new(WORKERS));
+        let workers: Vec<_> = connections
+            .into_iter()
+            .map(|mut connection| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || -> rusqlite::Result<(String, i64)> {
+                    barrier.wait();
+                    migrate_accounts(&mut connection)?;
+                    let kind = connection.query_row(
+                        "SELECT kind FROM accounts WHERE id = ?1",
+                        [PROFILE],
+                        |row| row.get(0),
+                    )?;
+                    let schema =
+                        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                    Ok((kind, schema))
+                })
+            })
+            .collect();
+        for worker in workers {
+            assert_eq!(
+                worker.join().map_err(|_| "migration worker panicked")??,
+                ("microsoft".to_owned(), 2)
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn version_one_account_metadata_is_migrated_without_losing_accounts() -> TestResult {
+        let server = MockServer::start().await;
+        let root = tempfile::tempdir()?;
+        let auth = service(root.path(), &server, MemoryStore::default())?;
+        let path = root.path().join("accounts.sqlite3");
+        {
+            let connection = Connection::open(&path)?;
+            connection.execute_batch(&format!(
+                "CREATE TABLE accounts (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, client_id TEXT NOT NULL);
+                 PRAGMA user_version=1;
+                 INSERT INTO accounts (id, name, client_id) VALUES ('{PROFILE}', 'NudgePlayer', '{APP}');"
+            ))?;
+            connection.pragma_update(None, "user_version", 1)?;
+        }
+        let accounts = auth.accounts().await?;
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, Uuid::parse_str(PROFILE)?);
+        assert_eq!(accounts[0].kind, AccountKind::Microsoft);
+        let connection = Connection::open(&path)?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(version, 2);
+        let mut statement = connection.prepare("PRAGMA table_info(accounts)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert!(columns.iter().any(|name| name == "kind"));
+        Ok(())
     }
 
     #[tokio::test]

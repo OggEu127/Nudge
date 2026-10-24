@@ -12,15 +12,20 @@ authors.workspace = true
 name = "nudge-gui"
 path = "src/main.rs"
 
+[build-dependencies]
+winresource.workspace = true
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 eframe.workspace = true
+image.workspace = true
 launcher-core.workspace = true
 launcher-minecraft.workspace = true
 launcher-modpack.workspace = true
 launcher-net.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
@@ -32,7 +37,7 @@ uuid.workspace = true
 rfd = { version = "0.17.2", default-features = false }
 
 [dev-dependencies]
-tempfile.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

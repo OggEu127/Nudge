@@ -1,9 +1,12 @@
 //! Responsive native desktop frontend; installation and launch work lives in core.
 
 mod app;
+mod branding;
+mod covers;
 mod errors;
 mod jobs;
 mod logs;
+mod theme;
 
 use std::{path::PathBuf, time::Duration};
 
@@ -45,12 +48,19 @@ pub fn run(options: GuiOptions) -> Result<()> {
     let handle = runtime.handle().clone();
     let tracker = TaskTracker::new();
     let app_tracker = tracker.clone();
+    let window_icon = branding::window_icon()?;
     let native = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Nudge · Minecraft Java 版启动器")
-            .with_inner_size([1060.0, 740.0])
-            .with_min_inner_size([760.0, 560.0])
-            .with_drag_and_drop(true),
+            .with_inner_size([1240.0, 820.0])
+            .with_min_inner_size([920.0, 640.0])
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_has_shadow(false)
+            .with_taskbar(true)
+            .with_resizable(true)
+            .with_drag_and_drop(true)
+            .with_icon(window_icon),
         renderer: eframe::Renderer::Glow,
         centered: true,
         ..Default::default()

@@ -387,10 +387,15 @@ async fn run_account(
     match command {
         AccountCommand::List => {
             for account in service.accounts().await? {
+                let kind = match account.kind {
+                    launcher_core::auth::AccountKind::Microsoft => "microsoft",
+                    launcher_core::auth::AccountKind::Offline => "offline",
+                };
                 println!(
-                    "{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}",
                     account.id,
                     account.name,
+                    kind,
                     if config.auth.selected_account.as_deref()
                         == Some(account.id.to_string().as_str())
                     {
@@ -437,7 +442,7 @@ async fn run_account(
                     .await?
                     .iter()
                     .any(|account| account.id == id),
-                "account is not authorized locally"
+                "account is not saved locally"
             );
             updated.auth.selected_account = Some(id.to_string());
         }

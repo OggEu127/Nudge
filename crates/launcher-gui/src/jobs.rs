@@ -1,6 +1,9 @@
 //! Small async adapter between UI intentions and frontend-independent services.
 
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context as _, Result, bail};
 use eframe::egui;
@@ -22,6 +25,40 @@ use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
 use crate::errors::{Failure, FrontendError};
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum ContentKind {
+    Mods,
+    ResourcePacks,
+    Worlds,
+}
+
+impl ContentKind {
+    pub(crate) fn folder(self) -> &'static str {
+        match self {
+            Self::Mods => "mods",
+            Self::ResourcePacks => "resourcepacks",
+            Self::Worlds => "saves",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ContentEntry {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) size: Option<u64>,
+    pub(crate) detail: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ContentListing {
+    pub(crate) instance: String,
+    pub(crate) kind: ContentKind,
+    pub(crate) folder: PathBuf,
+    pub(crate) entries: Vec<ContentEntry>,
+}
 
 pub(crate) enum Action {
     Refresh,
@@ -48,8 +85,17 @@ pub(crate) enum Action {
         demo: bool,
     },
     Accounts,
+    AddOffline(String),
     SignIn(String),
     SignOut(Uuid),
+    Content {
+        id: String,
+        kind: ContentKind,
+    },
+    ImportCover {
+        id: String,
+        source: PathBuf,
+    },
 }
 
 pub(crate) enum Outcome {
@@ -63,7 +109,16 @@ pub(crate) enum Outcome {
     Installed(Box<Instance>),
     Message(String),
     Accounts(Vec<Account>),
+    AccountCreated {
+        account: Account,
+        accounts: Vec<Account>,
+    },
     SignedIn(Account),
+    Content(ContentListing),
+    CoverInstalled {
+        id: String,
+        path: PathBuf,
+    },
 }
 
 pub(crate) enum Event {
@@ -209,6 +264,16 @@ async fn execute(
             check_cancel(&cancel)?;
             Outcome::Accounts(accounts)
         }
+        Action::AddOffline(name) => {
+            let auth = AuthService::new(manager.root())?;
+            let account = auth.add_offline(&name, &cancel).await?;
+            let accounts = auth.accounts().await?;
+            Outcome::AccountCreated { account, accounts }
+        }
+        Action::Content { id, kind } => {
+            Outcome::Content(scan_content(&manager, &id, kind, &cancel).await?)
+        }
+        Action::ImportCover { id, source } => import_cover(&manager, id, &source, &cancel).await?,
         Action::SignIn(client_id) => {
             let auth = AuthService::new(manager.root())?;
             let authorization = auth.begin_login(&client_id, &cancel).await?;
@@ -227,6 +292,16 @@ async fn execute(
         }
     };
     Ok(result)
+}
+
+async fn import_cover(
+    manager: &InstanceManager,
+    id: String,
+    source: &Path,
+    cancel: &CancellationToken,
+) -> Result<Outcome> {
+    let path = crate::covers::install_custom_cover(manager.root(), &id, source, cancel).await?;
+    Ok(Outcome::CoverInstalled { id, path })
 }
 
 async fn install_game(
@@ -251,6 +326,122 @@ async fn install_game(
         }
     };
     Ok(Outcome::Installed(Box::new(instance)))
+}
+
+/// Lists instance-local content without following links or mutating files.
+async fn scan_content(
+    manager: &InstanceManager,
+    id: &str,
+    kind: ContentKind,
+    cancel: &CancellationToken,
+) -> Result<ContentListing> {
+    let folder = manager.game_directory(id)?.join(kind.folder());
+    launcher_core::instances::check_no_links(&folder).await?;
+    let mut entries = Vec::new();
+    let mut reader = match tokio::fs::read_dir(&folder).await {
+        Ok(reader) => reader,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ContentListing {
+                instance: id.to_owned(),
+                kind,
+                folder,
+                entries,
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("无法读取目录 {}", folder.display()));
+        }
+    };
+    while let Some(entry) = reader.next_entry().await? {
+        check_cancel(cancel)?;
+        let file_type = entry.file_type().await?;
+        // A link inside a game directory could point outside the instance.
+        if file_type.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        // Includes Windows junction/reparse points, not just Unix symlinks.
+        if !safe_content_path(&path).await? {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        let (include, size, detail, enabled) = match kind {
+            ContentKind::Mods if file_type.is_file() => {
+                if lower.ends_with(".jar.disabled") {
+                    (
+                        true,
+                        Some(entry.metadata().await?.len()),
+                        "已停用".to_owned(),
+                        false,
+                    )
+                } else if has_extension(&lower, "jar") {
+                    (
+                        true,
+                        Some(entry.metadata().await?.len()),
+                        "Forge / Fabric 模组".to_owned(),
+                        true,
+                    )
+                } else {
+                    (false, None, String::new(), true)
+                }
+            }
+            ContentKind::ResourcePacks if file_type.is_dir() => {
+                (true, None, "资源包文件夹".to_owned(), true)
+            }
+            ContentKind::ResourcePacks if file_type.is_file() && has_extension(&lower, "zip") => (
+                true,
+                Some(entry.metadata().await?.len()),
+                "ZIP 资源包".to_owned(),
+                true,
+            ),
+            ContentKind::Worlds if file_type.is_dir() => {
+                let level = path.join("level.dat");
+                if !safe_content_path(&level).await? {
+                    continue;
+                }
+                let include = tokio::fs::symlink_metadata(&level)
+                    .await
+                    .is_ok_and(|metadata| metadata.is_file());
+                (include, None, "世界存档".to_owned(), true)
+            }
+            _ => (false, None, String::new(), true),
+        };
+        if include {
+            entries.push(ContentEntry {
+                name,
+                path,
+                size,
+                detail,
+                enabled,
+            });
+        }
+    }
+    entries.sort_by_key(|entry| entry.name.to_ascii_lowercase());
+    launcher_core::instances::check_no_links(&folder).await?;
+    Ok(ContentListing {
+        instance: id.to_owned(),
+        kind,
+        folder,
+        entries,
+    })
+}
+
+async fn safe_content_path(path: &Path) -> Result<bool> {
+    match launcher_core::instances::check_no_links(path).await {
+        Ok(()) => Ok(true),
+        Err(launcher_core::Error::InvalidInput(_)) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn has_extension(name: &str, extension: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
 }
 
 fn check_cancel(cancel: &CancellationToken) -> Result<()> {
@@ -324,9 +515,88 @@ async fn run_game(
 
 #[cfg(test)]
 mod tests {
-    use super::{Event, EventSink, Outcome};
-    use launcher_core::instances::InstallProgress;
+    use super::{ContentKind, Event, EventSink, Outcome, scan_content};
+    use launcher_core::instances::{InstallProgress, InstanceManager};
     use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn content_scan_rejects_linked_roots_and_skips_linked_children() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let manager = InstanceManager::new(root.path())?;
+        let game = manager.game_directory("demo")?;
+        std::fs::create_dir_all(&game)?;
+        std::fs::write(outside.path().join("private.jar"), b"not instance content")?;
+        let cancel = CancellationToken::new();
+        for kind in [
+            ContentKind::Mods,
+            ContentKind::ResourcePacks,
+            ContentKind::Worlds,
+        ] {
+            let folder = game.join(kind.folder());
+            symlink(outside.path(), &folder)?;
+            assert!(scan_content(&manager, "demo", kind, &cancel).await.is_err());
+            std::fs::remove_file(&folder)?;
+            std::fs::create_dir(&folder)?;
+        }
+        symlink(
+            outside.path().join("private.jar"),
+            game.join("mods/link.jar"),
+        )?;
+        assert_eq!(
+            scan_content(&manager, "demo", ContentKind::Mods, &cancel)
+                .await?
+                .entries,
+            Vec::new()
+        );
+        let ancestor_root = tempfile::tempdir()?;
+        symlink(
+            root.path().join("instances"),
+            ancestor_root.path().join("instances"),
+        )?;
+        let linked_manager = InstanceManager::new(ancestor_root.path())?;
+        assert!(
+            scan_content(&linked_manager, "demo", ContentKind::Mods, &cancel)
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cover_import_is_a_tracked_background_action() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let manager = InstanceManager::new(root.path())?;
+        tokio::fs::create_dir_all(root.path().join("instances/demo")).await?;
+        let source = root.path().join("source.png");
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([1, 2, 3, 255])).save(&source)?;
+        let (sender, mut receiver) = mpsc::channel(4);
+        let sink = EventSink::new(sender, eframe::egui::Context::default());
+        let tracker = tokio_util::task::TaskTracker::new();
+        super::start(
+            &tokio::runtime::Handle::current(),
+            &tracker,
+            manager,
+            launcher_core::config::LauncherConfig::default(),
+            super::Action::ImportCover {
+                id: "demo".into(),
+                source,
+            },
+            CancellationToken::new(),
+            sink,
+        );
+        let event =
+            tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await?;
+        assert!(
+            matches!(event, Some(Event::Finished(Ok(Outcome::CoverInstalled { id, path }))) if id == "demo" && path.is_file())
+        );
+        tracker.close();
+        tracker.wait().await;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn saturated_progress_queue_never_loses_a_terminal_event() -> anyhow::Result<()> {
@@ -351,6 +621,40 @@ mod tests {
             matches!(receiver.recv().await, Some(Event::Finished(Ok(Outcome::Message(value)))) if value == "done")
         );
         worker.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn content_scan_lists_real_supported_files_and_skips_hidden_or_unrelated_ones()
+    -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let manager = InstanceManager::new(root.path())?;
+        let game = root.path().join("instances").join("demo").join("game");
+        for directory in ["mods", "resourcepacks", "saves"] {
+            tokio::fs::create_dir_all(game.join(directory)).await?;
+        }
+        tokio::fs::write(game.join("mods").join("a.jar"), b"jar").await?;
+        tokio::fs::write(game.join("mods").join("b.jar.disabled"), b"off").await?;
+        tokio::fs::write(game.join("mods").join("notes.txt"), b"ignore").await?;
+        tokio::fs::write(game.join("resourcepacks").join("pack.zip"), b"zip").await?;
+        tokio::fs::create_dir_all(game.join("saves").join("world")).await?;
+        tokio::fs::write(game.join("saves").join("world").join("level.dat"), b"level").await?;
+        tokio::fs::create_dir_all(game.join("saves").join("empty")).await?;
+
+        let cancel = CancellationToken::new();
+        let mods = scan_content(&manager, "demo", ContentKind::Mods, &cancel).await?;
+        assert_eq!(mods.entries.len(), 2);
+        assert_eq!(mods.entries[0].name, "a.jar");
+        assert!(mods.entries[0].enabled);
+        assert_eq!(mods.entries[1].name, "b.jar.disabled");
+        assert!(!mods.entries[1].enabled);
+        let packs = scan_content(&manager, "demo", ContentKind::ResourcePacks, &cancel).await?;
+        assert_eq!(packs.entries.len(), 1);
+        assert_eq!(packs.entries[0].name, "pack.zip");
+        let worlds = scan_content(&manager, "demo", ContentKind::Worlds, &cancel).await?;
+        assert_eq!(worlds.entries.len(), 1);
+        assert_eq!(worlds.entries[0].name, "world");
+        assert!(worlds.folder.ends_with("saves"));
         Ok(())
     }
 }

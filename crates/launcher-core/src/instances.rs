@@ -778,7 +778,15 @@ pub(crate) async fn create_directory(path: &Path) -> Result<()> {
         .map_err(|e| io_error("create directory", path, e))
 }
 
-pub(crate) async fn check_no_links(path: &Path) -> Result<()> {
+/// Rejects symbolic links and Windows reparse points in an entire path.
+///
+/// Missing components are allowed. This is a static check, not a filesystem
+/// sandbox: managed directories must not be concurrently writable by hostile
+/// processes. Callers committing files must recheck and use atomic replacement.
+///
+/// # Errors
+/// Returns a contextual filesystem error or rejects an unsafe path component.
+pub async fn check_no_links(path: &Path) -> Result<()> {
     let absolute = std::path::absolute(path).map_err(|e| io_error("resolve path", path, e))?;
     let mut current = PathBuf::new();
     for component in absolute.components() {
