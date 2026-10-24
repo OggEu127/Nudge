@@ -185,6 +185,11 @@ fn check_ancestors(path: &Path) -> Result<(), Error> {
     let mut current = PathBuf::new();
     for component in absolute.components() {
         current.push(component);
+        // A Windows prefix (C: or \\?\C:) is not the filesystem root.
+        // Retain it, but inspect only after the following RootDir is appended.
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
         match std::fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() || is_reparse_point(&meta) => {
                 return Err(invalid(format!(

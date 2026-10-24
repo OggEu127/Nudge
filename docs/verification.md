@@ -63,6 +63,14 @@
 
 仓库状态说明：v0.1.0 首次公开推送已将本记录对应的工程文件发布到 [OggEu127/Nudge](https://github.com/OggEu127/Nudge)。`.github/workflows/` 随首次推送生效；远端 CI 的实际结果需要以 GitHub Actions 页面为准。在观察到完整运行结果前，不把工作流配置当作已通过的远端验收。
 
+### 2026-10-25（韩国时间）：Windows 路径检查修复
+
+[CI 40134472108](https://github.com/OggEu127/Nudge/actions/runs/40134472108) 对应提交 `9bcaf0a`：Ubuntu 通过，Windows 测试失败。新增的错误摘要确认，多项实例和下载测试在读取 `\\?\C:` 元数据时收到 `Incorrect function`。问题是逐段检查路径时，盘符前缀尚未与根分隔符合并，就被当成目录读取。
+
+下载队列、单文件传输和实例路径检查现在保留前缀，等根分隔符拼接完成后才读取元数据；根目录及后续目录的符号链接和重解析点检查没有取消。Rust 对两种组件的定义见 [`Component::Prefix` 与 `RootDir`](https://doc.rust-lang.org/std/path/enum.Component.html)。新增三项通用回归测试覆盖原始路径、规范化路径、根目录、中文与空格、缺失子目录和完整性检查；另有一项 Windows 专用测试，用目录联接检查三个入口仍拒绝路径逃逸。
+
+本轮 Linux 上 138 项 Rust 测试全部通过（原 135 项加三项通用回归测试），0 失败、0 忽略；6 项 CI 脚本测试、格式检查、全目标编译、严格 Clippy、rustdoc 和工作流检查也通过。另已对 `x86_64-pc-windows-gnullvm` 执行全目标、全特性编译检查和严格 Clippy，包含 Windows 专用测试代码。这只是交叉编译检查，没有在本机执行 Windows 测试；修复后的 Windows 原生 CI 仍需提交后验证。
+
 ## 仍需外部/平台验收
 
 - Nudge 发布者拥有并获准使用的 Microsoft 应用 ID、真实持有 Minecraft Java 版的账号，以及真实授权/刷新/权限检查/退出。

@@ -3,7 +3,7 @@
 use std::{
     io::Write as _,
     num::NonZeroUsize,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use launcher_minecraft::{
@@ -791,6 +791,11 @@ pub async fn check_no_links(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for component in absolute.components() {
         current.push(component);
+        // A bare Windows prefix is not a directory. Keep it for the next
+        // RootDir component, which must still undergo the normal link check.
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
         match tokio::fs::symlink_metadata(&current).await {
             Ok(metadata) if metadata.file_type().is_symlink() || is_reparse_point(&metadata) => {
                 return Err(Error::InvalidInput(format!(

@@ -620,6 +620,90 @@ async fn a_held_instance_lock_prevents_installation_until_released() {
     assert!(instance.installed);
 }
 
+#[tokio::test]
+async fn link_checks_accept_canonical_roots_and_missing_descendants() {
+    use launcher_core::instances::check_no_links;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let nested = directory.path().join("中文 path");
+    std::fs::create_dir(&nested).expect("fixture directory");
+    let canonical = std::fs::canonicalize(&nested).expect("canonical fixture");
+    let root = canonical.ancestors().last().expect("absolute root");
+    for path in [&nested, &canonical, root] {
+        check_no_links(path).await.expect("valid ancestor chain");
+    }
+    check_no_links(&canonical.join("not-created/child"))
+        .await
+        .expect("missing descendants are allowed");
+    assert!(!canonical.join("not-created").exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_junctions_are_rejected_by_all_ancestor_checks() {
+    use std::os::windows::process::CommandExt as _;
+
+    use launcher_core::instances::check_no_links;
+    use launcher_net::{
+        engine::DownloadManager,
+        transfer::{Hashes, verify_content},
+    };
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let outside = tempfile::tempdir().expect("outside directory");
+    std::fs::write(outside.path().join("sentinel.bin"), b"untouched").expect("outside sentinel");
+    let base = std::fs::canonicalize(directory.path()).expect("canonical fixture");
+    let linked = base.join("junction");
+    // NTFS junctions do not require Developer Mode or symlink privileges.
+    // Expand fixture paths inside quotes, rather than interpolating command text.
+    let output = std::process::Command::new("cmd")
+        .args(["/D", "/C"])
+        .raw_arg("mklink /J \"%NUDGE_TEST_LINK%\" \"%NUDGE_TEST_TARGET%\"")
+        .env("NUDGE_TEST_LINK", directory.path().join("junction"))
+        .env("NUDGE_TEST_TARGET", outside.path())
+        .output()
+        .expect("create junction fixture");
+    assert!(
+        output.status.success(),
+        "cannot create junction fixture: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let error = check_no_links(&linked.join("child"))
+        .await
+        .expect_err("instance paths must reject junctions");
+    assert!(
+        matches!(error, launcher_core::Error::InvalidInput(_)),
+        "{error:?}"
+    );
+    let error = DownloadManager::new(linked.clone(), std::num::NonZeroUsize::MIN)
+        .err()
+        .expect("download roots must reject junctions");
+    assert!(
+        matches!(error, launcher_net::Error::InvalidSpec(_)),
+        "{error:?}"
+    );
+    let error = verify_content(
+        &linked.join("sentinel.bin"),
+        Some(9),
+        &Hashes {
+            sha1: Some(hex::encode(Sha1::digest(b"untouched"))),
+            ..Hashes::default()
+        },
+    )
+    .await
+    .expect_err("file verification must reject junctions");
+    assert!(
+        matches!(error, launcher_net::Error::Integrity { .. }),
+        "{error:?}"
+    );
+    assert!(!outside.path().join(".nudge-downloads").exists());
+    assert_eq!(
+        std::fs::read(outside.path().join("sentinel.bin")).expect("sentinel"),
+        b"untouched"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn rejects_a_symlinked_instance_directory_before_any_download() {

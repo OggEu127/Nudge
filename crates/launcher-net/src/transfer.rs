@@ -1,6 +1,6 @@
 //! Streamed file transfers with integrity verification and atomic commits.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest as _, Sha1};
@@ -79,6 +79,11 @@ async fn check_path_components(path: &Path) -> Result<(), Error> {
     let mut current = PathBuf::new();
     for component in absolute.components() {
         current.push(component);
+        // Preserve the Windows prefix until RootDir completes it; probing
+        // \\?\C: alone fails even when the full canonical path is valid.
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
         match tokio::fs::symlink_metadata(&current).await {
             Ok(metadata) if metadata.file_type().is_symlink() || is_reparse_point(&metadata) => {
                 return Err(Error::Integrity {
@@ -300,6 +305,44 @@ impl ReqwestHttpClient {
 mod tests {
     use super::*;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    #[tokio::test]
+    async fn canonical_paths_and_roots_preserve_integrity_checks() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let nested = directory.path().join("中文 path");
+        std::fs::create_dir(&nested).expect("fixture directory");
+        let path = nested.join("verified.bin");
+        std::fs::write(&path, b"verified").expect("fixture content");
+        let canonical = std::fs::canonicalize(&path).expect("canonical fixture");
+        let root = canonical.ancestors().last().expect("absolute root");
+        check_path_components(root).await.expect("valid root");
+        let hashes = Hashes {
+            sha256: Some(hex::encode(Sha256::digest(b"verified"))),
+            ..Hashes::default()
+        };
+        for file in [&path, &canonical] {
+            assert!(
+                verify_content(file, Some(8), &hashes)
+                    .await
+                    .expect("verified content")
+            );
+            assert!(
+                !verify_content(file, Some(9), &hashes)
+                    .await
+                    .expect("size mismatch")
+            );
+        }
+        let missing = canonical
+            .parent()
+            .expect("parent")
+            .join("not-created/child");
+        assert!(
+            !verify_content(&missing, Some(8), &hashes)
+                .await
+                .expect("missing file is not valid")
+        );
+        assert!(!nested.join("not-created").exists());
+    }
 
     #[tokio::test]
     async fn corrupt_download_preserves_existing_destination() {

@@ -57,6 +57,25 @@ fn job(id: &str, url: &str, bytes: &[u8]) -> DownloadJob {
     }
 }
 
+#[test]
+fn ancestor_checks_accept_canonical_roots_and_missing_descendants() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let nested = directory.path().join("中文 path");
+    std::fs::create_dir(&nested).expect("fixture directory");
+    // On Windows, canonicalize returns a verbatim (\\?\) path. The former
+    // component walk tried to read metadata for the incomplete \\?\C: prefix.
+    let canonical = std::fs::canonicalize(&nested).expect("canonical fixture");
+    let root = canonical.ancestors().last().expect("absolute root");
+    for path in [&nested, &canonical, root] {
+        super::check_ancestors(path).expect("valid ancestor chain");
+    }
+    let missing = canonical.join("not-created/child");
+    super::check_ancestors(&missing).expect("missing descendants are allowed");
+    assert!(!canonical.join("not-created").exists());
+    let manager = manager(&canonical, 1);
+    assert!(manager.private.join("tasks.sqlite3").is_file());
+}
+
 #[tokio::test]
 async fn every_backup_source_can_be_used_and_content_reservations_are_immutable() {
     let server = MockServer::start().await;
