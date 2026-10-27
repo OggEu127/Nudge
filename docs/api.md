@@ -29,11 +29,15 @@ cargo doc --locked --workspace --no-deps --open
 
 `Instance` 的 `installed` 是核心在全部验证通过后写入磁盘的状态；前端修改内存副本不会改变持久记录，启动与校验会重新读取磁盘状态，因此不能据此绕过就绪检查。保存/提交细节不作为前端绕过接口。`ImportOptions` 支持全部可选文件或 `BTreeSet<PathBuf>` 的逐项选择；预览后执行的前端应设置 `expected_archive_sha256`，绑定用户实际审核过的归档内容。
 
+`list` 会跳过单个损坏的实例记录并记录警告；直接按 ID `load` 仍返回该记录的错误。大小写仅不同的实例 ID 会在创建时明确拒绝，避免在大小写不敏感的文件系统上指向同一目录。
+
 `RunningInstance::next_event` 返回 `Started`、`Output`、`Exited`；`cancel` 请求结束，`wait` 排空输出并回收进程。输出通道有界，调用者应持续消费。不要丢弃句柄后假定游戏会在后台无限运行；实例锁和原生库由 supervisor 持有到直接子进程回收之后，不随消费者句柄提前释放。取消启动准备时，不可中止的原生库提取 worker 会安全完成并保留资源所有权，再返回取消结果。
 
 ## 认证层
 
 `launcher_core::auth::AuthService` 提供 `accounts`、`begin_login`、`complete_login`、`identity`、`logout`。`begin_login` 只发起用户授权，不代表成功；只有权限和档案检查完成后才保存账号。`identity` 的结果用于正常游戏启动，不能用显示名称拼装“已认证身份”。
+
+`accounts` 会跳过单条损坏的账户元数据并记录警告；对损坏账户执行操作仍明确报错。若记录的标识或名称无法读取，新增账户会停止，以免误判为不存在并覆盖原记录。
 
 `CredentialStore` 是可替换的异步凭据边界，生产为 `SystemCredentials`，测试为内存替代。`AuthService::with_parts` 和 `Endpoints` 用于显式测试注入；归档、加载器元数据与 GUI 普通用户输入不得重设生产认证端点。
 
@@ -70,3 +74,7 @@ cargo doc --locked --workspace --no-deps --open
 `DownloadManager::run` 接收 `DownloadJob` 集合、取消令牌与广播 sender；任务带稳定 ID、安全相对目的地、优先级和备用来源。`resume_pending` 重载持久队列。前端应处理进度广播落后，不把最佳努力的字节进度当作提交结果；方法返回值与实例提交状态是最终依据。
 
 认证专用 `api::ApiClient` 提供有界 JSON/form/bearer 请求，禁止重定向，错误不回传响应正文。不要将普通带重定向的下载客户端用于传递登录凭据。
+
+`DownloadManager::release_destinations` 在实例锁保护下接受可信旧任务，原子释放精确目的地及相应任务记录；保留文件与共享缓存，拒绝摘要已变化的旧计划。它与运行/恢复互斥；共享依赖需要上层证明没有其他所有者。上层删除/重装/升级协调器尚未实现，约束见[下载生命周期](download-lifecycle.md)。
+
+`launcher_net::persistence` 为配置及受管理内容提供文件刷盘、提交前路径复查、原子替换与 Unix 目录同步。同步失败可能发生于替换之后，调用者应重新读回，不能据错误直接假定旧内容仍在。静态路径复查不等于消除 TOCTOU。

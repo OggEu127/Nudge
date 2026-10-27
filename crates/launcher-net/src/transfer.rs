@@ -294,8 +294,8 @@ impl ReqwestHttpClient {
             });
         }
         check_path_components(path).await?;
-        temp.persist(path)
-            .map_err(|e| io_error("commit verified download", path, e.error))?;
+        crate::persistence::persist(temp, path)
+            .map_err(|e| io_error("commit verified download", path, e))?;
         tracing::info!(path = %path.display(), bytes = written, "verified download committed");
         Ok(TransferOutcome::Downloaded)
     }

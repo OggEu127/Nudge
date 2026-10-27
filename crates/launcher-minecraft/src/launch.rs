@@ -369,7 +369,11 @@ pub fn build_launch_spec(
         ("assets_root", path_text(&root.join("assets"))?),
         (
             "game_assets",
-            path_text(&root.join(&resolved.game_assets_path))?,
+            path_text(&if resolved.game_assets_in_resources {
+                game_dir.join("resources")
+            } else {
+                root.join(&resolved.game_assets_path)
+            })?,
         ),
         ("assets_index_name", resolved.asset_index_id.clone()),
         ("auth_uuid", uuid.clone()),
@@ -868,6 +872,7 @@ mod tests {
             asset_index_id: "test".to_owned(),
             logging_path: None,
             game_assets_path: "assets".into(),
+            game_assets_in_resources: false,
         }
     }
 
@@ -907,6 +912,34 @@ mod tests {
         assert_eq!(args[position + 1], game.as_os_str());
         assert!(!format!("{spec:?}").contains("secret-access-token"));
         assert!(!format!("{user:?}").contains("secret-access-token"));
+    }
+
+    #[test]
+    fn pre_sixteen_game_assets_argument_uses_instance_resources() {
+        let metadata = parse_version_metadata(
+            br#"{"id":"1.5.2","mainClass":"net.minecraft.client.main.Main","minecraftArguments":"--assetsDir ${game_assets}"}"#,
+        )
+        .expect("legacy metadata");
+        let root = std::env::temp_dir().join("Nudge shared data");
+        let game = root.join("instances/legacy/game");
+        let mut plan = resolved();
+        plan.game_assets_in_resources = true;
+        let spec = build_launch_spec(
+            &metadata,
+            &plan,
+            &root,
+            &game,
+            &root.join("natives"),
+            &identity(),
+            &LaunchOptions::default(),
+        )
+        .expect("legacy launch specification");
+        let args = spec.arguments();
+        let position = args
+            .iter()
+            .position(|value| value == "--assetsDir")
+            .expect("assets argument");
+        assert_eq!(args[position + 1], game.join("resources").as_os_str());
     }
 
     #[test]

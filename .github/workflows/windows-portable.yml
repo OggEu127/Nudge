@@ -85,7 +85,7 @@ jobs:
           Copy-Item -LiteralPath 'target/x86_64-pc-windows-msvc/release/nudge.exe' -Destination $packageRoot
           Copy-Item -LiteralPath 'target/x86_64-pc-windows-msvc/release/nudge-gui.exe' -Destination $packageRoot
           Copy-Item -LiteralPath 'LICENSE', 'README.md' -Destination $packageRoot
-          Copy-Item -LiteralPath 'docs', 'assets' -Destination $packageRoot -Recurse
+          Copy-Item -LiteralPath 'docs', 'assets', 'scripts' -Destination $packageRoot -Recurse
           $buildInfo = [ordered]@{
             version = $version
             commit = $env:GITHUB_SHA

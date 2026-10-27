@@ -2,7 +2,9 @@
 
 use std::{
     collections::BTreeSet,
-    env, io,
+    env,
+    ffi::OsStr,
+    io,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -187,13 +189,21 @@ fn add_installation_root(candidates: &mut Vec<PathBuf>, root: &Path) {
     }
 }
 
+fn path_java_candidates(path: &OsStr) -> impl Iterator<Item = PathBuf> + '_ {
+    // Empty and relative PATH entries resolve in the current directory. Java
+    // discovery must not execute a planted binary from that directory.
+    env::split_paths(path)
+        .filter(|entry| entry.is_absolute())
+        .map(|entry| entry.join(java_name()))
+}
+
 fn discovery_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(home) = env::var_os("JAVA_HOME") {
         add_home(&mut candidates, Path::new(&home));
     }
     if let Some(path) = env::var_os("PATH") {
-        candidates.extend(env::split_paths(&path).map(|entry| entry.join(java_name())));
+        candidates.extend(path_java_candidates(&path));
     }
     if cfg!(windows) {
         for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
@@ -280,6 +290,9 @@ pub async fn discover_java(
     }
     let mut inspected = BTreeSet::new();
     for candidate in discovery_candidates() {
+        if !candidate.is_absolute() {
+            continue;
+        }
         let Ok(path) = std::fs::canonicalize(&candidate) else {
             continue;
         };
@@ -312,6 +325,19 @@ pub async fn discover_java(
 #[cfg(test)]
 mod tests {
     use super::parse_java_major;
+
+    #[test]
+    fn path_discovery_ignores_empty_and_relative_entries() {
+        let absolute = std::env::current_dir().expect("current directory");
+        let path = std::env::join_paths([
+            std::path::Path::new(""),
+            std::path::Path::new("bin"),
+            absolute.as_path(),
+        ])
+        .expect("test PATH");
+        let candidates: Vec<_> = super::path_java_candidates(&path).collect();
+        assert_eq!(candidates, vec![absolute.join(super::java_name())]);
+    }
 
     #[test]
     fn parses_legacy_and_modern_feature_versions() {

@@ -10,6 +10,7 @@ use std::{
     io::BufReader,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, bail};
@@ -22,8 +23,10 @@ use crate::errors::FrontendError;
 
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SOURCE_DIMENSION: u32 = 4096;
-const MAX_THUMBNAIL_DIMENSION: u32 = 1600;
+const MAX_THUMBNAIL_DIMENSION: u32 = 512;
 const MAX_DECODE_ALLOC: u64 = 128 * 1024 * 1024;
+const MAX_TEXTURE_BYTES: usize = 64 * 1024 * 1024;
+const COVER_PATH_TTL: Duration = Duration::from_secs(3);
 const THUMBNAIL_NAME: &str = "cover.png";
 const COVER_NAMES: [&str; 4] = ["cover.png", "cover.jpg", "cover.jpeg", "cover.webp"];
 
@@ -145,12 +148,8 @@ pub(crate) async fn install_custom_cover(
         check_cancel(&commit_cancel)?;
         // Replace the directory entry, never truncate an existing inode. This
         // preserves any external file hard-linked to the previous cover.
-        temporary.persist(&commit_target).map_err(|error| {
-            anyhow::anyhow!(
-                "无法原子提交封面 {}：{}",
-                commit_target.display(),
-                error.error
-            )
+        launcher_net::persistence::persist(temporary, &commit_target).map_err(|error| {
+            anyhow::anyhow!("无法原子提交封面 {}：{}", commit_target.display(), error)
         })?;
         Ok(())
     })
@@ -186,6 +185,10 @@ pub(crate) struct CoverLoader {
     failed_receiver: Receiver<Failed>,
     requested: HashSet<String>,
     textures: HashMap<String, TextureHandle>,
+    texture_bytes: HashMap<String, usize>,
+    last_used: HashMap<String, u64>,
+    usage_tick: u64,
+    cached_paths: HashMap<String, (Option<PathBuf>, Instant)>,
     failed: HashSet<String>,
 }
 
@@ -227,7 +230,43 @@ impl CoverLoader {
             failed_receiver,
             requested: HashSet::new(),
             textures: HashMap::new(),
+            texture_bytes: HashMap::new(),
+            last_used: HashMap::new(),
+            usage_tick: 0,
+            cached_paths: HashMap::new(),
             failed: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn cover_path(&mut self, instance_id: &str, directory: &Path) -> Option<PathBuf> {
+        if let Some((path, checked)) = self.cached_paths.get(instance_id)
+            && checked.elapsed() < COVER_PATH_TTL
+        {
+            return path.clone();
+        }
+        let path = find_cover(directory);
+        if self
+            .cached_paths
+            .get(instance_id)
+            .is_some_and(|(previous, _)| previous != &path)
+        {
+            self.reload(instance_id);
+        }
+        self.cached_paths
+            .insert(instance_id.to_owned(), (path.clone(), Instant::now()));
+        path
+    }
+
+    fn evict_oldest(&mut self) {
+        if let Some(key) = self
+            .last_used
+            .iter()
+            .min_by_key(|(_, tick)| *tick)
+            .map(|(key, _)| key.clone())
+        {
+            self.textures.remove(&key);
+            self.texture_bytes.remove(&key);
+            self.last_used.remove(&key);
         }
     }
 
@@ -257,6 +296,7 @@ impl CoverLoader {
     pub(crate) fn poll(&mut self, context: &egui::Context) {
         while let Ok(loaded) = self.receiver.try_recv() {
             self.requested.remove(&loaded.key);
+            let bytes = loaded.rgba.len();
             let size = [
                 usize::try_from(loaded.width).unwrap_or(0),
                 usize::try_from(loaded.height).unwrap_or(0),
@@ -265,12 +305,22 @@ impl CoverLoader {
                 self.failed.insert(loaded.key);
                 continue;
             }
+            if bytes > MAX_TEXTURE_BYTES {
+                self.failed.insert(loaded.key);
+                continue;
+            }
+            while self.texture_bytes.values().sum::<usize>() + bytes > MAX_TEXTURE_BYTES {
+                self.evict_oldest();
+            }
             let image = ColorImage::from_rgba_unmultiplied(size, &loaded.rgba);
             let texture = context.load_texture(
                 format!("instance-cover-{}", loaded.key),
                 image,
                 TextureOptions::LINEAR,
             );
+            self.usage_tick = self.usage_tick.wrapping_add(1);
+            self.last_used.insert(loaded.key.clone(), self.usage_tick);
+            self.texture_bytes.insert(loaded.key.clone(), bytes);
             self.textures.insert(loaded.key, texture);
         }
         while let Ok(failed) = self.failed_receiver.try_recv() {
@@ -279,7 +329,11 @@ impl CoverLoader {
         }
     }
 
-    pub(crate) fn texture(&self, instance_id: &str) -> Option<&TextureHandle> {
+    pub(crate) fn texture(&mut self, instance_id: &str) -> Option<&TextureHandle> {
+        self.usage_tick = self.usage_tick.wrapping_add(1);
+        if let Some(last_used) = self.last_used.get_mut(instance_id) {
+            *last_used = self.usage_tick;
+        }
         self.textures.get(instance_id)
     }
 
@@ -290,6 +344,9 @@ impl CoverLoader {
     /// Forget one cover after the user supplies new artwork.
     pub(crate) fn reload(&mut self, instance_id: &str) {
         self.textures.remove(instance_id);
+        self.texture_bytes.remove(instance_id);
+        self.last_used.remove(instance_id);
+        self.cached_paths.remove(instance_id);
         self.failed.remove(instance_id);
         self.requested.remove(instance_id);
     }
@@ -297,6 +354,9 @@ impl CoverLoader {
     /// Drops textures for instances that no longer exist.
     pub(crate) fn retain_instances(&mut self, active: &HashSet<String>) {
         self.textures.retain(|key, _| active.contains(key));
+        self.texture_bytes.retain(|key, _| active.contains(key));
+        self.last_used.retain(|key, _| active.contains(key));
+        self.cached_paths.retain(|key, _| active.contains(key));
         self.failed.retain(|key| active.contains(key));
         self.requested.retain(|key| active.contains(key));
     }

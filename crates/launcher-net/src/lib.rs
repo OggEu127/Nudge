@@ -13,6 +13,7 @@ use url::Url;
 pub mod api;
 pub mod engine;
 pub mod paths;
+pub mod persistence;
 pub mod policy;
 pub mod transfer;
 
@@ -156,7 +157,9 @@ impl ReqwestHttpClient {
         let inner = Client::builder()
             .user_agent(user_agent)
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            // Artifact bodies may stream for hours. Bound inactivity instead
+            // of elapsed transfer time; metadata adds its own total deadline.
+            .read_timeout(Duration::from_secs(30))
             .no_proxy()
             .dns_resolver(Arc::new(PolicyResolver::new(policy)))
             .redirect(redirect_policy)
@@ -181,15 +184,16 @@ impl HttpClient for ReqwestHttpClient {
     async fn get_bytes(&self, url: &Url) -> Result<Vec<u8>, Error> {
         self.validate_url(url)?;
 
-        let response =
-            self.inner
-                .get(url.clone())
-                .send()
-                .await
-                .map_err(|source| Error::Request {
-                    url: diagnostic_url(url),
-                    source: source.without_url(),
-                })?;
+        let response = self
+            .inner
+            .get(url.clone())
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|source| Error::Request {
+                url: diagnostic_url(url),
+                source: source.without_url(),
+            })?;
         let final_url = response.url().clone();
         self.validate_url(&final_url)?;
         let final_url = diagnostic_url(&final_url);

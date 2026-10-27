@@ -28,8 +28,10 @@ use crate::{
 const PRIVATE_DIRECTORY: &str = ".nudge-downloads";
 const MAX_ATTEMPTS: u32 = 4;
 const MAX_UNKNOWN_SIZE: u64 = 2 * 1024 * 1024 * 1024;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[path = "engine_lifecycle.rs"]
+mod lifecycle;
 
 /// One independently verifiable artifact and its owned-root-relative target.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -481,11 +483,20 @@ impl DownloadManager {
     /// [`Error::Cancelled`] after active transfers preserve their partial state.
     pub async fn run(
         &self,
-        mut jobs: Vec<DownloadJob>,
+        jobs: Vec<DownloadJob>,
         cancel: CancellationToken,
         events: broadcast::Sender<DownloadEvent>,
     ) -> Result<(), Error> {
         let _lock = self.lock_run()?;
+        self.run_locked(jobs, cancel, events).await
+    }
+
+    async fn run_locked(
+        &self,
+        mut jobs: Vec<DownloadJob>,
+        cancel: CancellationToken,
+        events: broadcast::Sender<DownloadEvent>,
+    ) -> Result<(), Error> {
         self.validate_jobs(&jobs)?;
         {
             let mut database = self.database()?;
@@ -581,6 +592,9 @@ impl DownloadManager {
         cancel: CancellationToken,
         events: broadcast::Sender<DownloadEvent>,
     ) -> Result<(), Error> {
+        // Read under the same lock as run/release: a stale pre-lock snapshot
+        // must never resurrect tasks released by another process.
+        let _lock = self.lock_run()?;
         let jobs = {
             let database = self.database()?;
             let mut statement = database
@@ -595,7 +609,7 @@ impl DownloadManager {
             }
             jobs
         };
-        self.run(jobs, cancel, events).await
+        self.run_locked(jobs, cancel, events).await
     }
 
     fn destination(&self, relative: &Path) -> Result<PathBuf, Error> {
@@ -776,14 +790,10 @@ impl DownloadManager {
             .as_file()
             .sync_all()
             .map_err(|error| io_error("sync verified artifact", temporary.path(), error))?;
+        check_ancestors(destination)?;
         require_plain(destination, false)?;
-        temporary.persist(destination).map_err(|error| {
-            io_error(
-                "atomically commit verified artifact",
-                destination,
-                error.error,
-            )
-        })?;
+        crate::persistence::persist(temporary, destination)
+            .map_err(|error| io_error("atomically commit verified artifact", destination, error))?;
         Ok(())
     }
 
@@ -822,7 +832,6 @@ impl DownloadManager {
                 .http
                 .inner
                 .get(source.clone())
-                .timeout(REQUEST_TIMEOUT)
                 .header(header::ACCEPT_ENCODING, "identity");
             if offset > 0
                 && let Some(state) = &partial
@@ -1042,9 +1051,8 @@ fn save_partial(path: &Path, state: &PartialState) -> Result<(), Error> {
         .as_file()
         .sync_all()
         .map_err(|error| io_error("sync partial validator", temporary.path(), error))?;
-    temporary
-        .persist(path)
-        .map_err(|error| io_error("commit partial validator", path, error.error))?;
+    crate::persistence::persist(temporary, path)
+        .map_err(|error| io_error("commit partial validator", path, error))?;
     Ok(())
 }
 

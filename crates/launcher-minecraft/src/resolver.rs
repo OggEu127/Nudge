@@ -69,6 +69,8 @@ pub struct ResolvedVersion {
     pub asset_index_id: String,
     /// Legacy `${game_assets}` destination relative to shared storage.
     pub game_assets_path: PathBuf,
+    /// Legacy `${game_assets}` uses this instance's `resources` directory.
+    pub game_assets_in_resources: bool,
     /// Logging configuration path relative to shared storage.
     pub logging_path: Option<PathBuf>,
 }
@@ -392,6 +394,7 @@ pub fn resolve(
         } else {
             PathBuf::from("assets")
         },
+        game_assets_in_resources: asset_index.map_to_resources && !asset_index.virtual_assets,
         logging_path,
     })
 }
@@ -801,6 +804,19 @@ mod tests {
         assert_eq!(plan.natives.len(), 1);
         assert_eq!(plan.natives[0].excludes, ["META-INF/"]);
         assert_eq!(plan.game_assets_path, PathBuf::from("assets/virtual/test"));
+        assert!(!plan.game_assets_in_resources);
+    }
+
+    #[test]
+    fn pre_sixteen_assets_use_instance_resources_for_legacy_argument() {
+        let assets: AssetIndex = serde_json::from_value(serde_json::json!({
+            "map_to_resources": true,
+            "objects": {}
+        }))
+        .expect("legacy asset index");
+        let plan =
+            resolve(&version(serde_json::json!({})), &assets, &linux()).expect("valid legacy plan");
+        assert!(plan.game_assets_in_resources);
     }
 
     #[test]

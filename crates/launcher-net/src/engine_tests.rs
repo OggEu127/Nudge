@@ -57,6 +57,224 @@ fn job(id: &str, url: &str, bytes: &[u8]) -> DownloadJob {
     }
 }
 
+// Keep paused time from auto-advancing while real loopback I/O or the blocking
+// filesystem pool is pending. Tests advance only after observing each chunk.
+struct ManualClock(tokio::task::JoinHandle<()>);
+
+impl ManualClock {
+    fn new() -> Self {
+        Self(tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        }))
+    }
+}
+
+impl Drop for ManualClock {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_stream_survives_five_minutes_without_retrying()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _clock = ManualClock::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (chunks, mut next_chunk) = tokio::sync::mpsc::channel::<()>(1);
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await?;
+        let mut buffer = [0; 4096];
+        let received = socket.read(&mut buffer).await?;
+        assert!(received > 0, "client request must arrive before response");
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 18\r\nConnection: close\r\n\r\n")
+            .await?;
+        for _ in 0..18 {
+            next_chunk.recv().await.expect("send next chunk");
+            socket.write_all(b"x").await?;
+        }
+        Ok::<_, std::io::Error>(())
+    });
+    let directory = tempfile::tempdir()?;
+    let manager = manager(directory.path(), 1);
+    let artifact = job("slow", &format!("http://{address}/slow"), &[b'x'; 18]);
+    let (events, mut receiver) = broadcast::channel(128);
+    let run = manager.run(vec![artifact.clone()], CancellationToken::new(), events);
+    tokio::pin!(run);
+    let start = tokio::time::Instant::now();
+    let mut attempts = 0;
+    for received in 1..=17 {
+        if received > 1 {
+            tokio::time::advance(Duration::from_secs(20)).await;
+        }
+        chunks.send(()).await?;
+        loop {
+            tokio::select! {
+                result = &mut run => panic!("transfer ended before chunk {received}: {result:?}"),
+                event = receiver.recv() => match event?.kind {
+                    DownloadEventKind::Started { .. } => attempts += 1,
+                    DownloadEventKind::Retrying { .. } => panic!("active stream must not retry"),
+                    DownloadEventKind::Progress { downloaded, .. } if downloaded == received => break,
+                    _ => {},
+                }
+            }
+        }
+    }
+    chunks.send(()).await?;
+    run.await?;
+    server.await??;
+    assert!(start.elapsed() > Duration::from_secs(300));
+    assert_eq!(attempts, 1);
+    assert_eq!(
+        tokio::fs::read(directory.path().join(&artifact.destination)).await?,
+        [b'x'; 18]
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_stream_still_times_out_and_can_be_cancelled_during_retry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _clock = ManualClock::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await?;
+        let mut buffer = [0; 4096];
+        let received = socket.read(&mut buffer).await?;
+        assert!(received > 0, "client request must arrive before response");
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nETag: \"v1\"\r\n\r\nx")
+            .await?;
+        let _ = stopped.await;
+        Ok::<_, std::io::Error>(())
+    });
+    let directory = tempfile::tempdir()?;
+    let manager = manager(directory.path(), 1);
+    let cancel = CancellationToken::new();
+    let (events, mut receiver) = broadcast::channel(128);
+    let run = manager.run(
+        vec![job("stalled", &format!("http://{address}/stalled"), b"xx")],
+        cancel.clone(),
+        events,
+    );
+    tokio::pin!(run);
+    loop {
+        tokio::select! {
+            result = &mut run => panic!("unexpected completion: {result:?}"),
+            event = receiver.recv() => if matches!(event?.kind, DownloadEventKind::Progress { downloaded: 1, .. }) { break; },
+        }
+    }
+    tokio::time::advance(Duration::from_secs(31)).await;
+    loop {
+        tokio::select! {
+            result = &mut run => panic!("unexpected completion: {result:?}"),
+            event = receiver.recv() => if matches!(event?.kind, DownloadEventKind::Retrying { .. }) { break; },
+        }
+    }
+    cancel.cancel();
+    assert!(matches!(run.await, Err(crate::Error::Cancelled)));
+    assert!(!directory.path().join("files/stalled.bin").exists());
+    let _ = stop.send(());
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn release_is_atomic_scoped_idempotent_and_prevents_task_resurrection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let directory = tempfile::tempdir()?;
+    let manager = manager(directory.path(), 1);
+    let retired = job("retired", &server.uri(), b"old");
+    let shared = job("shared", &server.uri(), b"shared");
+    // Cancellation persists the plan without needing a network attempt.
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let (events, _) = broadcast::channel(128);
+    assert!(
+        manager
+            .run(
+                vec![retired.clone(), shared.clone()],
+                cancelled,
+                events.clone()
+            )
+            .await
+            .is_err()
+    );
+    let mut stale = retired.clone();
+    stale.spec = job("stale", &server.uri(), b"new").spec;
+    assert!(
+        manager
+            .release_destinations(&[shared.clone(), stale])
+            .is_err()
+    );
+    assert_eq!(
+        manager
+            .database()?
+            .query_row("SELECT count(*) FROM destinations", [], |row| row
+                .get::<_, i64>(0))?,
+        2
+    );
+    let lock = manager.lock_run()?;
+    assert!(
+        manager
+            .release_destinations(std::slice::from_ref(&retired))
+            .is_err()
+    );
+    drop(lock);
+    std::fs::create_dir_all(directory.path().join("files"))?;
+    std::fs::write(directory.path().join(&retired.destination), b"user data")?;
+    assert_eq!(
+        manager.release_destinations(std::slice::from_ref(&retired))?,
+        1
+    );
+    assert_eq!(
+        manager.release_destinations(std::slice::from_ref(&retired))?,
+        0
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join(&retired.destination))?,
+        b"user data"
+    );
+    assert_eq!(
+        manager
+            .database()?
+            .query_row("SELECT id FROM downloads", [], |row| row
+                .get::<_, String>(0))?,
+        shared.id
+    );
+    // Retire the other pending task. Resume must now make zero requests.
+    manager.release_destinations(&[shared])?;
+    manager
+        .resume_pending(CancellationToken::new(), events.clone())
+        .await?;
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("request history")
+            .is_empty()
+    );
+    let mut replacement = job("replacement", &server.uri(), b"new");
+    replacement.destination = retired.destination;
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        manager.run(vec![replacement], cancelled, events).await,
+        Err(crate::Error::Cancelled)
+    ));
+    Ok(())
+}
+
 #[test]
 fn ancestor_checks_accept_canonical_roots_and_missing_descendants() {
     let directory = tempfile::tempdir().expect("temporary directory");

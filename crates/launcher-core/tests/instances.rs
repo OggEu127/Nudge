@@ -2,7 +2,7 @@
 
 use std::{cell::RefCell, path::PathBuf};
 
-use launcher_core::instances::{InstallProgress, InstanceManager};
+use launcher_core::instances::{InstallProgress, Instance, InstanceManager};
 use launcher_minecraft::{VersionMetadata, parse_version_metadata};
 use sha1::{Digest as _, Sha1};
 use tempfile::TempDir;
@@ -15,6 +15,50 @@ const CLIENT: &[u8] = b"verified fixture client jar";
 const LIBRARY: &[u8] = b"verified fixture library jar";
 const ASSET: &[u8] = b"verified cached sound asset";
 const ASSET_INDEX_ID: &str = "fixture-assets";
+
+#[tokio::test]
+async fn corrupt_instance_record_does_not_hide_healthy_instance() {
+    let fixture = Fixture::new().await;
+    let directory = fixture.manager.root().join("instances");
+    let healthy = Instance {
+        schema_version: 1,
+        id: "healthy".to_owned(),
+        name: "Healthy".to_owned(),
+        minecraft_version: "fixture-version".to_owned(),
+        metadata: fixture.metadata.clone(),
+        installed: false,
+        pack: None,
+    };
+    tokio::fs::create_dir_all(directory.join("healthy"))
+        .await
+        .expect("healthy instance directory");
+    tokio::fs::write(
+        directory.join("healthy/instance.json"),
+        serde_json::to_vec(&healthy).expect("serialize fixture"),
+    )
+    .await
+    .expect("healthy record");
+    tokio::fs::create_dir_all(directory.join("damaged"))
+        .await
+        .expect("damaged instance directory");
+    let damaged = directory.join("damaged/instance.json");
+    tokio::fs::write(&damaged, b"{invalid")
+        .await
+        .expect("damaged record");
+
+    let listed = fixture
+        .manager
+        .list()
+        .await
+        .expect("list healthy instances");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, healthy.id);
+    assert!(fixture.manager.load("damaged").await.is_err());
+    assert_eq!(
+        tokio::fs::read(damaged).await.expect("retained record"),
+        b"{invalid"
+    );
+}
 
 fn write_pack_archive(path: &std::path::Path, dependencies: &serde_json::Value) {
     use std::io::Write as _;
@@ -157,6 +201,41 @@ async fn cancelled_launch_preparation_never_creates_or_starts_an_instance() {
             .join("instances/cancelled")
             .exists()
     );
+}
+
+#[tokio::test]
+async fn launching_missing_instance_does_not_create_a_directory() {
+    let fixture = Fixture::new().await;
+    let result = fixture
+        .manager
+        .launch(
+            "missing",
+            &launcher_minecraft::launch::LaunchIdentity::demo(),
+            launcher_minecraft::launch::LaunchOptions {
+                demo: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(!fixture.manager.root().join("instances/missing").exists());
+}
+
+#[tokio::test]
+async fn case_alias_instance_id_has_a_clear_error_before_creating_files() {
+    let fixture = Fixture::new().await;
+    let existing = fixture.manager.root().join("instances/Pack");
+    tokio::fs::create_dir_all(&existing)
+        .await
+        .expect("existing instance directory");
+    let result = fixture
+        .manager
+        .install_profile("pack", "fixture-version", fixture.metadata.clone(), |_| {})
+        .await;
+    let error = result.expect_err("case alias must be rejected");
+    assert!(error.to_string().contains("conflicts with existing `Pack`"));
+    assert!(!existing.join("instance.lock").exists());
 }
 
 #[tokio::test]

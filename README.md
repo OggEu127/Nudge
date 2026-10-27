@@ -11,11 +11,11 @@
   <a href="https://github.com/OggEu127/Nudge/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FOggEu127%2FNudge%2Fmain%2FCargo.toml&query=%24.workspace.package.version&label=version&color=blue" alt="Version"></a>
   <a href="https://github.com/OggEu127/Nudge/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue" alt="License: GPL-3.0-only"></a>
   <a href="https://github.com/OggEu127/Nudge/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FOggEu127%2FNudge%2Fmain%2FCargo.toml&query=%24.workspace.package.rust-version&label=MSRV&color=orange&logo=rust&suffix=%2B" alt="Rust MSRV"></a>
-  <a href="https://github.com/OggEu127/Nudge/blob/main/docs/verification.md"><img src="https://img.shields.io/badge/platform-Linux%20smoke--tested%20%7C%20Windows%20cross--compiled-lightgrey" alt="Platform: Linux smoke-tested, Windows cross-compiled"></a>
+  <a href="https://github.com/OggEu127/Nudge/blob/main/docs/verification.md"><img src="https://img.shields.io/badge/platform-Windows%20x86--64%20target%20%7C%20native%20QA%20pending-lightgrey" alt="Platform: Windows x86-64 target, native acceptance pending"></a>
   <a href="https://github.com/OggEu127/Nudge/blob/main/docs/verification.md"><img src="https://img.shields.io/badge/UI-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue" alt="UI language: Simplified Chinese"></a>
 </p>
 
-用 Rust 写的 Minecraft Java 版启动器，支持原版、Fabric 和本地 MRPACK，提供 CLI 与简体中文桌面界面。
+用 Rust 写的 Minecraft Java 版启动器，支持原版、Fabric 和本地 MRPACK，提供 CLI 与简体中文桌面界面。当前只面向 Windows x86-64 交付；Linux 用于开发验证，不作为发行目标。
 
 **v0.1.0 · 2026-10-24 首次公开推送 · 开发版。** 真实 Microsoft 账号登录、Windows 原生桌面和签名发行尚未验收；仓库没有内置 Microsoft 应用 ID。
 
@@ -37,32 +37,33 @@ Forge、NeoForge、Quilt、CurseForge/HMCL 整合包、Java 自动安装、整�
 
 ## 快速开始
 
-需要 Rust 1.99 或更新版本、平台 C/C++ 链接器，以及已安装且与游戏版本匹配的 Java。
+在 Windows x86-64 上构建需要 Rust 1.99 或更新版本、Visual Studio C++ 构建工具与 Windows SDK；启动游戏还需要已安装且与游戏版本匹配的 Java。准备步骤见[开发指南](docs/development.md)。
 
-```sh
+```powershell
 git clone https://github.com/OggEu127/Nudge.git
 cd Nudge
-cargo build --locked --workspace
-cargo run --locked -p launcher-gui
+cargo build --locked --release -p launcher-cli -p launcher-gui --target x86_64-pc-windows-msvc
+.\target\x86_64-pc-windows-msvc\release\nudge-gui.exe
 ```
 
 常用 CLI 命令（完整参数见[用户指南](docs/user-guide.md)）：
 
-```sh
-target/debug/nudge config init
-target/debug/nudge manifest --kind release --limit 10
-target/debug/nudge install 1.21.5 --instance vanilla
-target/debug/nudge install 1.21.5 --instance fabric --fabric 0.20.1
-target/debug/nudge inspect MyPack.mrpack --instance my-pack
-target/debug/nudge import MyPack.mrpack --instance my-pack
-target/debug/nudge launch my-pack --demo --java /path/to/java
+```powershell
+$nudge = '.\target\x86_64-pc-windows-msvc\release\nudge.exe'
+& $nudge config init
+& $nudge manifest --kind release --limit 10
+& $nudge install 1.21.5 --instance vanilla
+& $nudge install 1.21.5 --instance fabric --fabric 0.20.1
+& $nudge inspect .\MyPack.mrpack --instance my-pack
+& $nudge import .\MyPack.mrpack --instance my-pack
+& $nudge launch my-pack --demo --java 'C:\Program Files\Java\jdk-21\bin\java.exe'
 ```
 
-导入前先看 `inspect` 输出的 `archive_sha256`，再用 `import --archive-sha256` 传入同一个摘要，导入就只接受你确认过的归档。安装中断后可用 `resume` 继续，`verify` 用于完整性检查。
+将示例 Java 路径替换为本机实际路径。导入前先看 `inspect` 输出的 `archive_sha256`，再用 `import --archive-sha256` 传入同一个摘要，导入就只接受你确认过的归档。安装中断后可用 `resume` 继续，`verify` 用于完整性检查。
 
 ## 验证
 
-当前质量门包括格式检查、全目标编译、严格 Clippy、工作区测试和 rustdoc。2026-10-24 在 Linux 上运行了 135 项测试，0 失败；命令与已知限制见[开发指南](docs/development.md)。真实账号、Windows 原生桌面和音频/高 DPI 仍需人工验收。
+当前质量门包括格式检查、全目标编译、严格 Clippy、工作区测试和 rustdoc。2026-10-27 在 Linux 上运行了 155 项测试，0 失败；命令与已知限制见[开发指南](docs/development.md)。真实账号、Windows 原生桌面和音频/高 DPI 仍需人工验收。
 
 ## 参考与致谢
 
@@ -86,6 +87,8 @@ target/debug/nudge launch my-pack --demo --java /path/to/java
 - [开发、测试与故障定位](docs/development.md)
 - [Windows 构建与发布](docs/release.md)
 - [实际验证记录](docs/verification.md)
+- [下载记录生命周期设计](docs/download-lifecycle.md)
+- [Windows 原生验收工具与清单](docs/windows-acceptance.md)
 
 ## 许可证
 

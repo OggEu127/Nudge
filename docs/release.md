@@ -1,6 +1,6 @@
 # Windows 构建与发布
 
-本项目优先 Windows x86-64，架构保留 Linux/macOS 扩展。工作流存在、交叉编译通过、Windows 原生运行正常是三个不同结论，必须分别记录。
+本项目当前只面向 Windows x86-64 交付。Linux 上的开发测试与 Windows 交叉编译都不等于 Windows 原生运行验收，必须分别记录。
 
 本仓库支持构建、打包和发布开发版，但不代表稳定版已经验收。微软应用注册、真实账号登录和 Windows 桌面运行仍需检查。发布前要先确认版本号、说明和对应提交。
 
@@ -40,10 +40,11 @@ Nudge-<version>-windows-x86_64/
 ├── BUILD-INFO.json
 ├── SHA256SUMS
 ├── docs/
+├── scripts/windows-smoke.ps1
 └── assets/
 ```
 
-ZIP 外另提供 `.zip.sha256`。`BUILD-INFO.json` 记录版本、源 commit、目标、Rust 版本和工作流链接。包不包含 Java、游戏文件、第三方 Mod 或任何账号信息。当前工作流复制整个 `docs/` 以保持 README 中的相对链接可用，因此也包含开发与发布文档；这些内部页面不是运行便携包所必需的内容。工作流还会复制 `assets/`，让 README 顶部的标志可以显示；应用图标已经内嵌进两个 EXE，运行时不依赖这些外部文件。
+ZIP 外另提供 `.zip.sha256`。`BUILD-INFO.json` 记录版本、源 commit、目标、Rust 版本和工作流链接。包不包含 Java、游戏文件、第三方 Mod 或任何账号信息。当前工作流复制整个 `docs/` 以保持 README 中的相对链接可用，因此也包含开发与发布文档；这些内部页面不是运行便携包所必需的内容。工作流还会复制 `scripts/`（Windows 冒烟工具）与 `assets/`，让 README 顶部的标志可以显示；应用图标已经内嵌进两个 EXE，运行时不依赖这些外部文件。
 
 “便携”指免安装的二进制分发，不表示默认把用户数据写在 EXE 旁。默认数据进入平台用户目录。需要自包含数据时，显式运行：
 
@@ -58,7 +59,7 @@ ZIP 外另提供 `.zip.sha256`。`BUILD-INFO.json` 记录版本、源 commit、�
 
 ### 本地交叉编译便携开发包
 
-本次工作区根目录提供 `nudge-gui.exe`（图形应用）、`nudge.exe`（CLI）和 `Nudge-0.1.0-windows-x86_64-portable.zip`。它们是 Linux 上以静态 CRT 选项交叉编译的 Windows x86-64 未签名开发产物，不是 Windows 实机验收或正式发行声明。ZIP 包内附带本次未提交修改的对应 `source/` 快照、`THIRD-PARTY-NOTICES.txt`、工具链运行库 `licenses/`、使用说明、构建信息和逐文件 SHA-256。不会打包 `.git`、`target`、账号数据库、游戏或用户数据。
+工作区根目录现存 `nudge-gui.exe`（图形应用）、`nudge.exe`（CLI）和 `Nudge-0.1.0-windows-x86_64-portable.zip`，均是先前在 Linux 上交叉编译的 Windows x86-64 未签名开发产物，**不对应当前待推送源码**。它们不是 Windows 实机验收或正式发行声明；推送后应以对应提交的 Windows 工作流重新构建。旧 ZIP 内附带当时的 `source/` 快照、`THIRD-PARTY-NOTICES.txt`、工具链运行库 `licenses/`、使用说明、构建信息和逐文件 SHA-256。打包前会拒绝源码目录中的未跟踪文件；需要包含新源码时先将其加入 Git 暂存区。不会打包 `.git`、`target`、账号数据库、游戏或用户数据。
 
 供维护者在准备好 Windows 二进制及相应运行库许可目录后重复打包（拒绝覆盖已有输出）：
 
@@ -85,6 +86,8 @@ cargo build --locked --release -p launcher-cli -p launcher-gui --target x86_64-p
 构建流程不打包 Visual C++ 系统运行库；需在干净 Windows 机器核查依赖，并在必要时明确提供微软官方运行库安装指引。当前没有数字签名，Windows SmartScreen 可能提示未知发布者；校验摘要不能替代代码签名或来源审核。
 
 在 Linux 上可用 `x86_64-pc-windows-gnullvm` 加 `-Ctarget-feature=+crt-static` 做导入依赖诊断；已验证可消除 `libunwind.dll`，但产物仍依赖 Windows 系统 UCRT，且未在 Windows 执行，不能替代 MSVC runner 的正式构建。
+
+Windows 实机脚本、凭据库测试和逐项结果模板见[Windows 原生验收](windows-acceptance.md)。脚本未执行和矩阵未签收时不得标为 Windows 已验收。
 
 ## 正式发布前清单
 

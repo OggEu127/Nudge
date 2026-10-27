@@ -2,6 +2,29 @@
 
 本文件记录当前开发过程实际观察到的结果，不以工作流配置代替远端执行，也不以 mock 替代正版账号或 Windows 桌面验收。记录基准日为 **2026-10-24 UTC**；后续代码修改仍需重新运行质量检查。
 
+## 2026-10-27 Windows x64 推送前检查
+
+当前仅面向 Windows x86-64 交付。此次未提交源码在 Linux 主机上通过格式检查、全特性工作区测试（**155 项通过，0 失败**）、严格 Clippy、`RUSTDOCFLAGS='-D warnings'` 文档构建及 CI 测试日志脚本检查。使用本机 LLVM-MinGW 工具链，通过 `x86_64-pc-windows-gnullvm` 的全工作区、全目标、全特性交叉编译检查和严格 Clippy；Windows 专用测试仅编译，未在 Windows 执行。
+
+这些结果不等于 Windows MSVC Release 构建或桌面验收。根目录现存 EXE/ZIP 是先前源码的构建，不对应当前待推送改动；真实 Microsoft 登录仍搁置，实例删除/重装/升级的上层协调器也尚未实现。推送后的 Windows 原生 CI 和新产物需另行核查。
+
+## 2026-10-25 待办跟进
+
+本轮只执行本地验证；Microsoft 真实账号验收按维护者要求搁置，Windows 暂无实机，以下交叉编译不等于 Windows 原生运行。
+
+| 待办 | 本轮结果 |
+| --- | --- |
+| P1 下载总超时 | 已移除固定 300 秒限制，正文持续有进展可继续；保留连接/读停滞超时和元数据 30 秒总超时。手动虚拟时钟累计 320 秒的分块流单次成功，停滞测试触发重试后可取消 |
+| P1 Microsoft 正版登录 | 搁置；未配置或借用他人应用 ID，未进行真实授权 |
+| P2 下载记录生命周期 | 完成显式释放接口、互斥与事务回滚测试，以及[删除/重装/升级设计](download-lifecycle.md)；上层用户操作与共享依赖所有者索引尚未实现 |
+| P2 文件持久化与路径 | 配置、实例记录、下载与封面接入统一提交；Unix 同步父目录，配置/记录新建目录同步目录项；故障注入与提交前链接替换测试通过。剩余 TOCTOU 窗口与 Windows 掉电保证仍有限制 |
+| P2 Windows 验收 | 准备 [PowerShell 冒烟脚本与验收矩阵](windows-acceptance.md)、显式运行的合成凭据测试；脚本和实机矩阵尚未在 Windows 执行 |
+| P3 GUI 拆分与重试 | 导航/对话框状态、读取请求状态、首页/内容、其他页面、下载页分模块；失败与加载分开显示，版本失败可主动重试，不自动逐帧重发 |
+
+验证环境：Linux x86-64、Rust/Cargo 1.99.1；全工作区测试 **144 通过、0 失败**（其中网络模块 36 项）。格式检查、全目标编译、严格 Clippy、rustdoc 均通过；GUI 的无显示逐页布局测试通过，没有进行新的原生窗口/真实游戏冒烟。测试日志保存在本地 `target/followup-tests.log`。
+
+额外通过 `cargo check --locked --offline --workspace --all-targets --target x86_64-pc-windows-gnullvm`，使用工作区已有 LLVM-MinGW 工具链；包括新增 Windows 凭据测试的编译检查。未运行 Windows EXE、系统凭据测试或 PowerShell 脚本，也没有重新生成 Windows 发行包。
+
 ## 已执行的真实游戏冒烟
 
 环境：Linux x86-64、Rust Stable 1.99.1、显式指定的 Adoptium Java 21.0.13 JRE、Xvfb 虚拟显示与软件 OpenGL。Java 来自公开发行元数据并核对 SHA-256，仅为本次测试准备，不是产品的 Java 自动安装功能。最终代码状态重新下载并校验了同一版本 JRE，然后用当前构建重跑三类 demo 启动。

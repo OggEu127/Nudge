@@ -44,7 +44,7 @@ pub enum Error {
     /// The user denied authorization.
     #[error("Microsoft device authorization was declined")]
     Declined,
-    /// The stored refresh credential was revoked or expired.
+    /// The stored refresh credential is missing, revoked, or expired.
     #[error("Microsoft authorization is no longer valid; sign in again")]
     ReauthenticationRequired,
     /// An upstream service rejected a request.
@@ -101,6 +101,7 @@ pub enum Error {
     #[error("account storage worker failed")]
     Worker,
     /// Another launcher process is modifying this account store.
+    /// Retained for callers that may have used this error in older versions.
     #[error("another Nudge process is using account storage at `{0}`")]
     Busy(PathBuf),
     /// A bounded HTTP transport failed.
@@ -148,6 +149,40 @@ pub struct Account {
     pub client_id: String,
 }
 
+struct SavedAccount {
+    id: Option<String>,
+    name: Option<String>,
+    client_id: Option<String>,
+    kind: Option<String>,
+}
+
+fn parse_saved_account(row: SavedAccount) -> Result<Account, Error> {
+    let id = row
+        .id
+        .as_deref()
+        .ok_or(Error::InvalidResponse("saved account metadata"))
+        .and_then(|id| {
+            Uuid::parse_str(id).map_err(|_| Error::InvalidResponse("saved account metadata"))
+        })?;
+    let name = row
+        .name
+        .ok_or(Error::InvalidResponse("saved account metadata"))?;
+    let client_id = row
+        .client_id
+        .ok_or(Error::InvalidResponse("saved account metadata"))?;
+    let kind = row
+        .kind
+        .ok_or(Error::InvalidResponse("saved account metadata"))?;
+    let kind = AccountKind::from_database(&kind)?;
+    validate_account(id, &name, kind, &client_id)?;
+    Ok(Account {
+        id,
+        name,
+        kind,
+        client_id,
+    })
+}
+
 /// Pending device authorization. Its private device secret must not be logged.
 pub struct DeviceAuthorization {
     /// Official Microsoft verification page, without credentials in its URL.
@@ -190,6 +225,13 @@ pub trait CredentialStore: Send + Sync + 'static {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemCredentials;
 
+fn credential_read_error(error: &keyring::Error) -> Error {
+    match error {
+        keyring::Error::NoEntry => Error::ReauthenticationRequired,
+        _ => Error::CredentialStore("read"),
+    }
+}
+
 impl CredentialStore for SystemCredentials {
     async fn read(&self, key: String) -> Result<Zeroizing<String>, Error> {
         tokio::task::spawn_blocking(move || {
@@ -198,7 +240,7 @@ impl CredentialStore for SystemCredentials {
             entry
                 .get_password()
                 .map(Zeroizing::new)
-                .map_err(|_| Error::CredentialStore("read"))
+                .map_err(|error| credential_read_error(&error))
         })
         .await
         .map_err(|_| Error::Worker)?
@@ -281,8 +323,8 @@ pub struct AuthService<S = SystemCredentials> {
 }
 
 struct AccountLease<'a> {
-    _guard: tokio::sync::MutexGuard<'a, ()>,
     _file: std::fs::File,
+    _guard: tokio::sync::MutexGuard<'a, ()>,
 }
 
 impl AuthService<SystemCredentials> {
@@ -344,36 +386,40 @@ impl<S: CredentialStore> AuthService<S> {
     /// Lists public metadata only; this does not touch the OS credential store.
     ///
     /// # Errors
-    /// Returns safe-path, database, or stored-metadata validation failures.
+    /// Returns safe-path or database failures. Invalid individual rows are
+    /// omitted with a warning; the stored rows are not changed.
     pub async fn accounts(&self) -> Result<Vec<Account>, Error> {
+        let mut accounts = Vec::new();
+        let mut skipped = 0;
+        for row in self.saved_accounts().await? {
+            match parse_saved_account(row) {
+                Ok(account) => accounts.push(account),
+                Err(_) => skipped += 1,
+            }
+        }
+        if skipped > 0 {
+            tracing::warn!(skipped, "invalid account metadata rows omitted from list");
+        }
+        Ok(accounts)
+    }
+
+    async fn saved_accounts(&self) -> Result<Vec<SavedAccount>, Error> {
         self.database(|connection| {
             let mut statement = connection
                 .prepare("SELECT id, name, client_id, kind FROM accounts ORDER BY name, id")?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()
+            let mut rows = statement.query([])?;
+            let mut accounts = Vec::new();
+            while let Some(row) = rows.next()? {
+                accounts.push(SavedAccount {
+                    id: row.get(0).ok(),
+                    name: row.get(1).ok(),
+                    client_id: row.get(2).ok(),
+                    kind: row.get(3).ok(),
+                });
+            }
+            Ok(accounts)
         })
-        .await?
-        .into_iter()
-        .map(|(id, name, client_id, kind)| {
-            let id = Uuid::parse_str(&id)
-                .map_err(|_| Error::InvalidResponse("saved account metadata"))?;
-            let kind = AccountKind::from_database(&kind)?;
-            validate_account(id, &name, kind, &client_id)?;
-            Ok(Account {
-                id,
-                name,
-                kind,
-                client_id,
-            })
-        })
-        .collect()
+        .await
     }
 
     /// Creates or returns a local offline identity.
@@ -397,18 +443,24 @@ impl<S: CredentialStore> AuthService<S> {
             return Err(Error::Cancelled);
         }
         let id = offline_uuid(&name);
-        let accounts = self.accounts().await?;
-        if let Some(existing) = accounts
-            .iter()
-            .find(|account| account.kind == AccountKind::Offline && account.id == id)
-        {
-            return Ok(existing.clone());
-        }
-        if accounts.iter().any(|account| {
-            account.kind == AccountKind::Offline && account.name.eq_ignore_ascii_case(&name)
-        }) || accounts.iter().any(|account| account.id == id)
-        {
-            return Err(Error::OfflineConflict);
+        for row in self.saved_accounts().await? {
+            let saved_id = row
+                .id
+                .as_deref()
+                .ok_or(Error::InvalidResponse("saved account metadata"))?;
+            let saved_name = row
+                .name
+                .as_deref()
+                .ok_or(Error::InvalidResponse("saved account metadata"))?;
+            if Uuid::parse_str(saved_id).is_ok_and(|saved| saved == id)
+                || saved_name.eq_ignore_ascii_case(&name)
+            {
+                let existing = parse_saved_account(row)?;
+                if existing.kind == AccountKind::Offline && existing.id == id {
+                    return Ok(existing);
+                }
+                return Err(Error::OfflineConflict);
+            }
         }
         let account = Account {
             id,
@@ -483,13 +535,12 @@ impl<S: CredentialStore> AuthService<S> {
             kind: AccountKind::Microsoft,
             client_id: authorization.client_id,
         };
-        if self
-            .accounts()
-            .await?
-            .iter()
-            .any(|saved| saved.id == account.id && saved.client_id != account.client_id)
-        {
-            return Err(Error::ApplicationChanged);
+        match self.account(account.id).await {
+            Ok(saved) if saved.client_id != account.client_id => {
+                return Err(Error::ApplicationChanged);
+            }
+            Ok(_) | Err(Error::AccountMissing(_)) => {}
+            Err(error) => return Err(error),
         }
         let refresh = token
             .refresh_token
@@ -614,24 +665,35 @@ impl<S: CredentialStore> AuthService<S> {
         safe_regular_path(&path).await?;
         let worker_path = path.clone();
         let file = tokio::task::spawn_blocking(move || {
-            let file = std::fs::OpenOptions::new()
+            std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .truncate(false)
                 .open(&worker_path)
-                .map_err(|_| Error::Storage(worker_path.clone()))?;
-            file.try_lock().map_err(|_| Error::Busy(worker_path))?;
-            Ok::<_, Error>(file)
+                .map_err(|_| Error::Storage(worker_path))
         })
         .await
         .map_err(|_| Error::Worker)??;
-        if cancel.is_cancelled() {
-            return Err(Error::Cancelled);
+        loop {
+            if cancel.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => return Err(Error::Cancelled),
+                        () = tokio::time::sleep(Duration::from_millis(50)) => {}
+                    }
+                }
+                Err(_) => return Err(Error::Storage(path)),
+            }
         }
         Ok(AccountLease {
-            _guard: guard,
             _file: file,
+            _guard: guard,
         })
     }
 
@@ -660,16 +722,23 @@ impl<S: CredentialStore> AuthService<S> {
             };
             let response = match response {
                 Ok(response) => response,
-                Err(launcher_net::api::Error::Timeout) => {
-                    // RFC 8628 requires reducing frequency after connection
-                    // timeouts; the fixed overall authorization deadline still
-                    // bounds all retries, even if the service stays unavailable.
-                    interval = interval.saturating_mul(2);
+                Err(launcher_net::api::Error::Timeout | launcher_net::api::Error::Transport) => {
+                    // Transient transport failures do not invalidate the device
+                    // code. Back off while keeping the authorization deadline.
+                    interval = interval.saturating_mul(2).min(Duration::from_secs(30));
                     continue;
                 }
                 Err(launcher_net::api::Error::Cancelled) => return Err(Error::Cancelled),
                 Err(error) => return Err(error.into()),
             };
+            if response.status == 429 {
+                interval += Duration::from_secs(5);
+                continue;
+            }
+            if (500..600).contains(&response.status) {
+                interval = interval.saturating_mul(2).min(Duration::from_secs(30));
+                continue;
+            }
             if (200..300).contains(&response.status) {
                 return parse_oauth_token(&response);
             }
@@ -748,11 +817,21 @@ impl<S: CredentialStore> AuthService<S> {
     }
 
     async fn account(&self, id: Uuid) -> Result<Account, Error> {
-        self.accounts()
-            .await?
-            .into_iter()
-            .find(|account| account.id == id)
-            .ok_or(Error::AccountMissing(id))
+        let mut unreadable_id = false;
+        for row in self.saved_accounts().await? {
+            match row.id.as_deref() {
+                Some(saved) if Uuid::parse_str(saved).is_ok_and(|saved| saved == id) => {
+                    return parse_saved_account(row);
+                }
+                None => unreadable_id = true,
+                _ => {}
+            }
+        }
+        if unreadable_id {
+            Err(Error::InvalidResponse("saved account metadata"))
+        } else {
+            Err(Error::AccountMissing(id))
+        }
     }
 
     async fn save_account(&self, account: &Account) -> Result<(), Error> {
@@ -1094,6 +1173,14 @@ mod tests {
     const REFRESH: &str = "fixture-private-refresh-token";
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    #[test]
+    fn missing_system_credential_requests_sign_in() {
+        assert!(matches!(
+            super::credential_read_error(&keyring::Error::NoEntry),
+            Error::ReauthenticationRequired
+        ));
+    }
+
     #[derive(Clone, Default)]
     struct MemoryStore {
         tokens: Arc<StdMutex<BTreeMap<String, Zeroizing<String>>>>,
@@ -1293,6 +1380,92 @@ mod tests {
                 .ok_or("missing recorder")?
                 .is_empty()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn damaged_account_row_does_not_hide_or_block_healthy_accounts() -> TestResult {
+        let server = MockServer::start().await;
+        let root = tempfile::tempdir()?;
+        let auth = service(root.path(), &server, MemoryStore::default())?;
+        let cancel = CancellationToken::new();
+        let healthy = auth.add_offline("Healthy", &cancel).await?;
+        let damaged = auth.add_offline("Damaged", &cancel).await?;
+        let damaged_id = damaged.id.to_string();
+        auth.database(move |connection| {
+            connection
+                .execute(
+                    "UPDATE accounts SET kind = 'unknown' WHERE id = ?1",
+                    [damaged_id],
+                )
+                .map(|_| ())
+        })
+        .await?;
+
+        assert_eq!(auth.accounts().await?, vec![healthy.clone()]);
+        assert!(matches!(
+            auth.logout(damaged.id).await,
+            Err(Error::InvalidResponse(_))
+        ));
+        assert!(matches!(
+            auth.add_offline("Damaged", &cancel).await,
+            Err(Error::InvalidResponse(_))
+        ));
+        auth.logout(healthy.id).await?;
+        assert_eq!(auth.add_offline("Another", &cancel).await?.name, "Another");
+        assert_eq!(auth.accounts().await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unreadable_account_columns_cannot_be_mistaken_for_missing_accounts() -> TestResult {
+        let server = MockServer::start().await;
+        let root = tempfile::tempdir()?;
+        let auth = service(root.path(), &server, MemoryStore::default())?;
+        let cancel = CancellationToken::new();
+        let healthy = auth.add_offline("Healthy", &cancel).await?;
+        let damaged = auth.add_offline("Damaged", &cancel).await?;
+        let damaged_id = damaged.id.to_string();
+        auth.database(move |connection| {
+            connection
+                .execute(
+                    "UPDATE accounts SET kind = x'ff' WHERE id = ?1",
+                    [damaged_id],
+                )
+                .map(|_| ())
+        })
+        .await?;
+
+        assert_eq!(auth.accounts().await?, vec![healthy.clone()]);
+        assert!(matches!(
+            auth.account(damaged.id).await,
+            Err(Error::InvalidResponse(_))
+        ));
+        assert!(matches!(
+            auth.add_offline("Damaged", &cancel).await,
+            Err(Error::InvalidResponse(_))
+        ));
+        auth.logout(healthy.id).await?;
+
+        let unreadable = auth.add_offline("Unreadable", &cancel).await?;
+        let unreadable_id = unreadable.id.to_string();
+        auth.database(move |connection| {
+            connection
+                .execute(
+                    "UPDATE accounts SET id = x'ff' WHERE id = ?1",
+                    [unreadable_id],
+                )
+                .map(|_| ())
+        })
+        .await?;
+        assert!(matches!(
+            auth.account(unreadable.id).await,
+            Err(Error::InvalidResponse(_))
+        ));
+        assert!(matches!(
+            auth.add_offline("Another", &cancel).await,
+            Err(Error::InvalidResponse(_))
+        ));
         Ok(())
     }
 
@@ -1568,6 +1741,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn device_poll_recovers_from_transient_non_json_server_error() -> TestResult {
+        let server = MockServer::start().await;
+        let root = tempfile::tempdir()?;
+        let auth = service(root.path(), &server, MemoryStore::default())?;
+        device(&server).await;
+        chain(&server, true, PROFILE).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let response_calls = calls.clone();
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(move |_: &Request| {
+                if response_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(502).set_body_string("<html>temporary outage</html>")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "token_type":"Bearer", "expires_in":3600,
+                        "access_token":"fixture-microsoft-token", "refresh_token":REFRESH
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+        auth.complete_login(pending_login(&auth).await?, &CancellationToken::new())
+            .await?;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn xbox_rejections_and_inconsistent_claims_never_reach_minecraft() -> TestResult {
         let server = MockServer::start().await;
         let root = tempfile::tempdir()?;
@@ -1779,10 +1981,16 @@ mod tests {
         let third = service(other.path(), &server, store)?;
         let account = seed(&first).await?;
         let lease = first.lock(&CancellationToken::new()).await?;
-        assert!(matches!(
-            second.lock(&CancellationToken::new()).await,
-            Err(Error::Busy(_))
-        ));
+        let cancelled = CancellationToken::new();
+        let waiting = second.lock(&cancelled);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), &mut waiting)
+                .await
+                .is_err()
+        );
+        cancelled.cancel();
+        assert!(matches!(waiting.await, Err(Error::Cancelled)));
         assert!(
             third
                 .store
@@ -1792,6 +2000,26 @@ mod tests {
         );
         drop(lease);
         second.lock(&CancellationToken::new()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn independent_coordinator_waits_until_account_lock_is_released() -> TestResult {
+        let server = MockServer::start().await;
+        let root = tempfile::tempdir()?;
+        let first = service(root.path(), &server, MemoryStore::default())?;
+        let second = service(root.path(), &server, MemoryStore::default())?;
+        let lease = first.lock(&CancellationToken::new()).await?;
+        let cancel = CancellationToken::new();
+        let waiting = second.lock(&cancel);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), &mut waiting)
+                .await
+                .is_err()
+        );
+        drop(lease);
+        tokio::time::timeout(Duration::from_secs(2), waiting).await??;
         Ok(())
     }
 

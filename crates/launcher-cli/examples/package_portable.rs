@@ -3,7 +3,7 @@
 //! Run with: `cargo run -p launcher-cli --example package_portable -- BIN_DIR OUTPUT.zip LICENSE_DIR`.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     fmt::Write as _,
     fs,
@@ -20,7 +20,7 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 const GUIDE: &str = "Nudge Windows x86-64 便携开发版\n\n解压整个文件夹后，双击 nudge-gui.exe 启动中文界面；nudge.exe 是命令行工具。\n需要匹配游戏版本的 Java，当前不附带或自动安装 Java。默认用户数据保存在系统用户目录，不是 EXE 旁。\n微软正版登录需要发布者自己的已注册并获准访问服务的应用 ID；本包未完成真实微软账号或 Windows 实机验收。离线账户不代表正版授权。\n此包是在 Linux 交叉编译的未签名开发构建，仍依赖 Windows 系统及 UCRT；SmartScreen 可能提示未知发布者。\nSHA256SUMS 可检查包内文件；source/ 是本次构建对应的工作区源码快照（含尚未提交的修改），不是仅凭旧 commit 重建的声明。\nTHIRD-PARTY-NOTICES.txt 和 licenses/ 包含依赖许可信息。分享日志前请检查账号隐私。\n";
 
 struct Package {
-    zip: ZipWriter<fs::File>,
+    zip: ZipWriter<tempfile::NamedTempFile>,
     prefix: String,
     hashes: BTreeMap<String, String>,
 }
@@ -102,6 +102,79 @@ fn output(command: &mut Command) -> Result<String> {
     let result = command.output()?;
     ensure!(result.status.success(), "build metadata command failed");
     String::from_utf8(result.stdout).context("metadata is not UTF-8")
+}
+
+fn tracked_files(root: &Path) -> Result<BTreeSet<PathBuf>> {
+    let result = Command::new("git")
+        .current_dir(root)
+        .args(["ls-files", "--cached", "--full-name", "-z"])
+        .output()?;
+    ensure!(
+        result.status.success(),
+        "cannot list tracked package inputs"
+    );
+    let paths = std::str::from_utf8(&result.stdout).context("tracked path is not UTF-8")?;
+    Ok(paths
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| root.join(path))
+        .collect())
+}
+
+fn verify_source_tree(directory: &Path, tracked: &BTreeSet<PathBuf>) -> Result<()> {
+    let metadata = fs::symlink_metadata(directory)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "not a regular source directory: {}",
+        directory.display()
+    );
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        ensure!(
+            !kind.is_symlink(),
+            "linked package input: {}",
+            entry.path().display()
+        );
+        if kind.is_dir() {
+            verify_source_tree(&entry.path(), tracked)?;
+        } else {
+            ensure!(
+                kind.is_file(),
+                "not a regular package input: {}",
+                entry.path().display()
+            );
+            ensure!(
+                tracked.contains(&entry.path()),
+                "untracked package input: {} (stage or remove it before packaging)",
+                entry.path().display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn verify_source_inputs(root: &Path) -> Result<()> {
+    let tracked = tracked_files(root)?;
+    for name in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+        ".gitattributes",
+        ".gitignore",
+        "README.md",
+        "LICENSE",
+    ] {
+        ensure!(
+            tracked.contains(&root.join(name)),
+            "untracked package input: {name}"
+        );
+    }
+    for name in ["crates", "docs", "assets", "scripts", ".github"] {
+        verify_source_tree(&root.join(name), &tracked)?;
+    }
+    Ok(())
 }
 
 fn notices(root: &Path) -> Result<String> {
@@ -186,6 +259,12 @@ fn main() -> Result<()> {
     let binaries = PathBuf::from(&arguments[0]);
     let archive = PathBuf::from(&arguments[1]);
     let licenses = PathBuf::from(&arguments[2]);
+    verify_source_inputs(&root)?;
+    ensure!(
+        !archive.exists(),
+        "output already exists: {}",
+        archive.display()
+    );
     // Generate metadata first so missing cached manifests cannot leave a
     // plausible-looking but incomplete application archive behind.
     let notices = notices(&root)?;
@@ -197,10 +276,14 @@ fn main() -> Result<()> {
         "link_flags": "-Ctarget-feature=+crt-static", "windows_runtime_tested": false,
         "source": "source/ contains the corresponding current working-tree snapshot"
     }))?;
-    let file =
-        fs::File::create_new(&archive).context("output already exists or cannot be created")?;
+    let temporary = tempfile::NamedTempFile::new_in(
+        archive
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?;
     let mut package = Package {
-        zip: ZipWriter::new(file),
+        zip: ZipWriter::new(temporary),
         prefix: format!("Nudge-{}-windows-x86_64", env!("CARGO_PKG_VERSION")),
         hashes: BTreeMap::new(),
     };
@@ -210,7 +293,7 @@ fn main() -> Result<()> {
     for name in ["README.md", "LICENSE"] {
         package.file(name, &root.join(name))?;
     }
-    for name in ["docs", "assets"] {
+    for name in ["docs", "assets", "scripts"] {
         package.tree(name, &root.join(name))?;
     }
     package.tree("licenses", &licenses)?;
@@ -229,7 +312,7 @@ fn main() -> Result<()> {
     ] {
         package.file(&format!("source/{name}"), &root.join(name))?;
     }
-    for name in ["crates", "docs", "assets", ".github"] {
+    for name in ["crates", "docs", "assets", "scripts", ".github"] {
         package.tree(&format!("source/{name}"), &root.join(name))?;
     }
     let mut checksums = String::new();
@@ -237,7 +320,12 @@ fn main() -> Result<()> {
         writeln!(checksums, "{digest}  {name}")?;
     }
     package.bytes("SHA256SUMS", checksums.as_bytes())?;
-    package.zip.finish()?.sync_all()?;
+    let temporary = package.zip.finish()?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist_noclobber(&archive)
+        .map_err(|error| error.error)
+        .context("cannot commit portable archive")?;
     let digest = digest_file(&archive)?;
     let mut sidecar_name = archive.as_os_str().to_os_string();
     sidecar_name.push(".sha256");
@@ -253,6 +341,26 @@ fn main() -> Result<()> {
     sidecar.sync_all()?;
     println!("{}  {}", digest, archive.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_source_tree;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn refuses_untracked_source_files() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("crates");
+        std::fs::create_dir(&source)?;
+        let tracked_file = source.join("lib.rs");
+        std::fs::write(&tracked_file, "pub fn safe() {}")?;
+        let tracked = BTreeSet::from([tracked_file]);
+        verify_source_tree(&source, &tracked)?;
+        std::fs::write(source.join(".env"), "SECRET=fixture")?;
+        assert!(verify_source_tree(&source, &tracked).is_err());
+        Ok(())
+    }
 }
 
 fn digest_file(path: &Path) -> Result<String> {

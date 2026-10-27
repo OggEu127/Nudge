@@ -223,9 +223,17 @@ impl ConfigStore {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent).map_err(|source| Error::CreateDirectory {
-            path: parent.to_path_buf(),
-            source,
+        launcher_net::persistence::check_path(&self.path).map_err(|source| {
+            Error::PersistConfig {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        launcher_net::persistence::create_dir_all(parent).map_err(|source| {
+            Error::CreateDirectory {
+                path: parent.to_path_buf(),
+                source,
+            }
         })?;
 
         let mut temporary = NamedTempFile::new_in(parent).map_err(|source| Error::WriteConfig {
@@ -241,12 +249,12 @@ impl ConfigStore {
                 directory: parent.to_path_buf(),
                 source,
             })?;
-        temporary
-            .persist(&self.path)
-            .map_err(|error| Error::PersistConfig {
+        launcher_net::persistence::persist(temporary, &self.path).map_err(|source| {
+            Error::PersistConfig {
                 path: self.path.clone(),
-                source: error.error,
-            })?;
+                source,
+            }
+        })?;
 
         Ok(())
     }

@@ -177,6 +177,9 @@ impl InstanceManager {
         cancel: &CancellationToken,
     ) -> Result<RunningInstance> {
         let prepare = async {
+            // A missing or damaged record must fail before lock preparation
+            // creates a new instance directory.
+            self.load(id).await?;
             let lease = self.acquire_instance(id).await?;
             let instance = self.load(id).await?;
             let plan = self.verify(&instance).await?;
@@ -288,7 +291,8 @@ impl InstanceManager {
     /// Lists instance records in deterministic order.
     ///
     /// # Errors
-    /// Returns an error for unreadable or corrupt existing records.
+    /// Returns an error if the instance directory cannot be enumerated.
+    /// Unreadable or invalid individual records are omitted with a warning.
     pub async fn list(&self) -> Result<Vec<Instance>> {
         let directory = self.root.join("instances");
         let mut entries = match tokio::fs::read_dir(&directory).await {
@@ -297,28 +301,38 @@ impl InstanceManager {
             Err(error) => return Err(io_error("list instances", &directory, error)),
         };
         let mut instances = Vec::new();
+        let mut skipped = 0;
         while let Some(entry) = entries
             .next_entry()
             .await
             .map_err(|e| io_error("list instances", &directory, e))?
         {
-            if entry
-                .file_type()
-                .await
-                .map_err(|e| io_error("inspect instance directory", &entry.path(), e))?
-                .is_dir()
-            {
-                let id = entry
-                    .file_name()
-                    .into_string()
-                    .map_err(|_| Error::InvalidInput("non-Unicode instance ID".to_owned()))?;
-                if tokio::fs::try_exists(entry.path().join("instance.json"))
-                    .await
-                    .map_err(|e| io_error("inspect instance record", &entry.path(), e))?
-                {
-                    instances.push(self.load(&id).await?);
-                }
+            let directory = entry.path();
+            let Ok(kind) = entry.file_type().await else {
+                skipped += 1;
+                continue;
+            };
+            if !kind.is_dir() {
+                continue;
             }
+            let Ok(id) = entry.file_name().into_string() else {
+                skipped += 1;
+                continue;
+            };
+            match tokio::fs::try_exists(directory.join("instance.json")).await {
+                Ok(true) => match self.load(&id).await {
+                    Ok(instance) => instances.push(instance),
+                    Err(_) => skipped += 1,
+                },
+                Ok(false) => {}
+                Err(_) => skipped += 1,
+            }
+        }
+        if skipped > 0 {
+            tracing::warn!(
+                skipped,
+                "unreadable or invalid instance records omitted from list"
+            );
         }
         instances.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(instances)
@@ -707,7 +721,29 @@ impl InstanceManager {
 
     pub(crate) async fn acquire_instance(&self, id: &str) -> Result<std::fs::File> {
         validate_id(id)?;
-        let directory = self.root.join("instances").join(id);
+        let instances = self.root.join("instances");
+        let mut entries = match tokio::fs::read_dir(&instances).await {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(io_error("inspect instance IDs", &instances, error)),
+        };
+        if let Some(entries) = &mut entries {
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|error| io_error("inspect instance IDs", &instances, error))?
+            {
+                let Some(existing) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if existing != id && existing.eq_ignore_ascii_case(id) {
+                    return Err(Error::InvalidInput(format!(
+                        "instance ID `{id}` conflicts with existing `{existing}` on case-insensitive filesystems"
+                    )));
+                }
+            }
+        }
+        let directory = instances.join(id);
         create_directory(&directory).await?;
         let path = directory.join("instance.lock");
         check_no_links(&path).await?;
@@ -775,7 +811,8 @@ pub(crate) async fn create_directory(path: &Path) -> Result<()> {
     check_no_links(path).await?;
     tokio::fs::create_dir_all(path)
         .await
-        .map_err(|e| io_error("create directory", path, e))
+        .map_err(|e| io_error("create directory", path, e))?;
+    check_no_links(path).await
 }
 
 /// Rejects symbolic links and Windows reparse points in an entire path.
@@ -922,9 +959,8 @@ pub(crate) async fn copy_content_verified(
     check_no_links(target).await?;
     // Replace the directory entry rather than truncating an existing inode:
     // user-created hard links must not let derived assets modify another file.
-    temporary
-        .persist(target)
-        .map_err(|error| io_error("commit verified asset copy", target, error.error))?;
+    launcher_net::persistence::persist(temporary, target)
+        .map_err(|error| io_error("commit verified asset copy", target, error))?;
     Ok(())
 }
 
@@ -936,7 +972,7 @@ async fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         let parent = path
             .parent()
             .ok_or_else(|| Error::InvalidInput("record has no parent".to_owned()))?;
-        std::fs::create_dir_all(parent)
+        launcher_net::persistence::create_dir_all(parent)
             .map_err(|e| io_error("create record directory", parent, e))?;
         let mut temporary = tempfile::NamedTempFile::new_in(parent)
             .map_err(|e| io_error("create record temporary file", parent, e))?;
@@ -944,9 +980,8 @@ async fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             .write_all(&bytes)
             .and_then(|()| temporary.as_file().sync_all())
             .map_err(|e| io_error("write record", &path, e))?;
-        temporary
-            .persist(&path)
-            .map_err(|e| io_error("commit record", &path, e.error))?;
+        launcher_net::persistence::persist(temporary, &path)
+            .map_err(|e| io_error("commit record", &path, e))?;
         Ok(())
     })
     .await
