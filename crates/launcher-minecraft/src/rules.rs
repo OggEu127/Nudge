@@ -1,6 +1,6 @@
 //! Pure evaluation of Mojang operating-system and launcher-feature rules.
 
-use std::{cmp::Ordering, collections::BTreeMap, process::Command};
+use std::{cmp::Ordering, collections::BTreeMap, path::PathBuf, process::Command};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ pub struct VersionRange {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OsCondition {
-    /// Mojang OS name (`windows`, `linux`, or `osx`).
+    /// Mojang operating-system name from version metadata.
     #[serde(default)]
     pub name: Option<String>,
     /// Architecture regular expression.
@@ -59,10 +59,10 @@ pub struct Rule {
     pub features: BTreeMap<String, bool>,
 }
 
-/// Explicit platform context, injectable for deterministic cross-platform tests.
+/// Explicit Windows platform context, injectable for deterministic rule tests.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Platform {
-    /// Mojang OS name (`windows`, `linux`, or `osx`).
+    /// Mojang OS name, always `windows` for a host launch.
     pub os: String,
     /// Java-compatible architecture name.
     pub arch: String,
@@ -73,39 +73,27 @@ pub struct Platform {
 }
 
 impl Platform {
-    /// Detects the current operating system and CPU architecture.
+    /// Detects the Windows version for the supported x86-64 target.
     ///
     /// Version discovery uses fixed system commands without a shell. If discovery
     /// fails, version-specific predicates do not match the empty version.
     #[must_use]
     pub fn host() -> Self {
-        let os = match std::env::consts::OS {
-            "macos" => "osx",
-            other => other,
-        };
-        let arch = match std::env::consts::ARCH {
-            "x86" => "x86",
-            "x86_64" if os == "windows" || os == "linux" => "amd64",
-            "aarch64" => "aarch64",
-            other => other,
-        };
         Self {
-            os: os.to_owned(),
-            arch: arch.to_owned(),
-            version: host_version(os),
+            os: "windows".to_owned(),
+            arch: "amd64".to_owned(),
+            version: host_version(),
             features: BTreeMap::new(),
         }
     }
 }
 
-fn host_version(os: &str) -> String {
-    let result = match os {
-        "windows" => Command::new("cmd.exe").args(["/D", "/C", "ver"]).output(),
-        "osx" => Command::new("/usr/bin/sw_vers")
-            .arg("-productVersion")
-            .output(),
-        _ => Command::new("uname").arg("-r").output(),
+fn host_version() -> String {
+    let Some(system_root) = std::env::var_os("SystemRoot") else {
+        return String::new();
     };
+    let command = PathBuf::from(system_root).join("System32/cmd.exe");
+    let result = Command::new(command).args(["/D", "/C", "ver"]).output();
     let Ok(output) = result else {
         return String::new();
     };
@@ -113,17 +101,13 @@ fn host_version(os: &str) -> String {
         return String::new();
     }
     let value = String::from_utf8_lossy(&output.stdout);
-    if os == "windows" {
-        // `ver` is localized, but its dotted numeric build remains recognizable.
-        value
-            .split(|character: char| !character.is_ascii_digit() && character != '.')
-            .find(|part| part.contains('.') && part.bytes().any(|byte| byte.is_ascii_digit()))
-            .unwrap_or_default()
-            .trim_matches('.')
-            .to_owned()
-    } else {
-        value.trim().to_owned()
-    }
+    // `ver` is localized, but its dotted numeric build remains recognizable.
+    value
+        .split(|character: char| !character.is_ascii_digit() && character != '.')
+        .find(|part| part.contains('.') && part.bytes().any(|byte| byte.is_ascii_digit()))
+        .unwrap_or_default()
+        .trim_matches('.')
+        .to_owned()
 }
 
 /// Evaluates an ordered rule list using the official last-matching-rule policy.
@@ -263,7 +247,7 @@ mod tests {
         assert!(allowed(&[], &windows()).expect("empty rules"));
         let rules = parse(
             r#"[{"action":"allow"},{"action":"disallow","os":{"name":"windows"}},
-                {"action":"allow","os":{"name":"linux"}}]"#,
+                {"action":"allow","os":{"name":"windows","arch":"x86"}}]"#,
         );
         assert!(!allowed(&rules, &windows()).expect("valid rules"));
     }

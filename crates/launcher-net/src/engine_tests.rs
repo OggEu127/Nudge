@@ -649,43 +649,6 @@ async fn priority_and_concurrency_bound_requests() {
     );
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn rejects_traversal_intermediate_links_and_parallel_root_writers() {
-    let directory = tempfile::tempdir().expect("owned root");
-    let outside = tempfile::tempdir().expect("outside root");
-    let manager = manager(directory.path(), 1);
-    let mut task = job("unsafe", "http://127.0.0.1:1/file", b"data");
-    task.destination = "../escape".into();
-    let (events, _) = broadcast::channel(128);
-    assert!(
-        manager
-            .run(vec![task.clone()], CancellationToken::new(), events.clone())
-            .await
-            .is_err()
-    );
-    std::os::unix::fs::symlink(outside.path(), directory.path().join("linked"))
-        .expect("fixture link");
-    tokio::fs::create_dir(outside.path().join("child"))
-        .await
-        .expect("outside child");
-    task.destination = "linked/child/file".into();
-    assert!(
-        manager
-            .run(vec![task], CancellationToken::new(), events.clone())
-            .await
-            .is_err()
-    );
-    assert!(!outside.path().join("child/file").exists());
-    let _held = manager.lock_run().expect("exclusive root lock");
-    assert!(
-        manager
-            .run(Vec::new(), CancellationToken::new(), events)
-            .await
-            .is_err()
-    );
-}
-
 #[tokio::test]
 async fn cancellation_during_request_is_observable_and_recoverable() {
     let server = MockServer::start().await;

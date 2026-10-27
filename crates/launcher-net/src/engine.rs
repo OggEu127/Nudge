@@ -170,15 +170,9 @@ fn require_plain(path: &Path, directory: bool) -> Result<bool, Error> {
     }
 }
 
-#[cfg(windows)]
 fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt as _;
     metadata.file_attributes() & 0x400 != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(_: &std::fs::Metadata) -> bool {
-    false
 }
 
 fn check_ancestors(path: &Path) -> Result<(), Error> {
@@ -377,14 +371,8 @@ impl DownloadManager {
         for path in [&private, &private.join("cache"), &private.join("partials")] {
             create_directory(path)?;
         }
-        // Queued source URLs may contain expiring signatures. Do not expose
-        // their SQLite/partial sidecars to other local users through the umask.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700))
-                .map_err(|error| io_error("protect private download state", &private, error))?;
-        }
+        // Queued source URLs may contain expiring signatures. Keep this state
+        // inside the current user's private application data directory.
         let db_path = private.join("tasks.sqlite3");
         require_plain(&db_path, false)?;
         require_plain(&private.join("tasks.sqlite3-wal"), false)?;

@@ -5,6 +5,9 @@
     windows_subsystem = "windows"
 )]
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+compile_error!("Nudge supports Windows x86-64 only");
+
 use std::{path::PathBuf, time::Duration};
 
 use anyhow::Result;
@@ -31,7 +34,6 @@ struct Arguments {
 
 fn main() -> Result<()> {
     let result = run();
-    #[cfg(target_os = "windows")]
     if let Err(error) = &result {
         let _ = rfd::MessageDialog::new()
             .set_title("Nudge 遇到问题")

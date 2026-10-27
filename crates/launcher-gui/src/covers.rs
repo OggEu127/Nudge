@@ -458,35 +458,4 @@ mod tests {
         assert_eq!(&fs::read(target)?[..8], b"\x89PNG\r\n\x1a\n");
         Ok(())
     }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cover_import_rejects_ancestor_and_target_symlinks() -> anyhow::Result<()> {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir()?;
-        let outside = tempfile::tempdir()?;
-        fs::create_dir(outside.path().join("demo"))?;
-        let source = root.path().join("source.png");
-        write_png(&source);
-        let cancel = tokio_util::sync::CancellationToken::new();
-        symlink(outside.path(), root.path().join("instances"))?;
-        assert!(
-            install_custom_cover(root.path(), "demo", &source, &cancel)
-                .await
-                .is_err()
-        );
-        assert!(!outside.path().join("demo/cover.png").exists());
-        fs::remove_file(root.path().join("instances"))?;
-        fs::create_dir_all(root.path().join("instances/demo"))?;
-        let external = outside.path().join("external.dat");
-        fs::write(&external, b"untouched")?;
-        symlink(&external, root.path().join("instances/demo/cover.png"))?;
-        assert!(
-            install_custom_cover(root.path(), "demo", &source, &cancel)
-                .await
-                .is_err()
-        );
-        assert_eq!(fs::read(external)?, b"untouched");
-        Ok(())
-    }
 }

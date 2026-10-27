@@ -15,11 +15,11 @@
   <a href="https://github.com/OggEu127/Nudge/blob/main/docs/verification.md"><img src="https://img.shields.io/badge/UI-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue" alt="UI language: Simplified Chinese"></a>
 </p>
 
-用 Rust 写的 Minecraft Java 版启动器，支持原版、Fabric 和本地 MRPACK，提供 CLI 与简体中文桌面界面。当前只面向 Windows x86-64 交付；Linux 用于开发验证，不作为发行目标。
+用 Rust 写的 Windows x86-64 Minecraft Java 版启动器，支持原版、Fabric 和本地 MRPACK，提供 CLI 与简体中文桌面界面。源码和 CI 仅支持 Windows x86-64。
 
 **v0.1.0 · 2026-10-24 首次公开推送 · 开发版。** 真实 Microsoft 账号登录、Windows 原生桌面和签名发行尚未验收；仓库没有内置 Microsoft 应用 ID。
 
-验证：2026-10-24 在 Linux/Xvfb 下以官方 demo 模式完成原版 1.21.5、Fabric 0.20.1 + 1.21.5 和 MRPACK 的安装与启动冒烟，详情见[验证记录](docs/verification.md)。
+旧版的历史验证记录见[验证记录](docs/verification.md)；当前 Windows 专用代码仍需 Windows 原生 CI 和桌面验收。
 
 ## 功能
 
@@ -63,7 +63,7 @@ $nudge = '.\target\x86_64-pc-windows-msvc\release\nudge.exe'
 
 ## 验证
 
-当前质量门包括格式检查、全目标编译、严格 Clippy、工作区测试和 rustdoc。2026-10-27 在 Linux 上运行了 155 项测试，0 失败；命令与已知限制见[开发指南](docs/development.md)。真实账号、Windows 原生桌面和音频/高 DPI 仍需人工验收。
+当前质量门在 Windows x86-64 runner 上执行格式、编译、严格 Clippy、工作区测试和 rustdoc；命令与已知限制见[开发指南](docs/development.md)。真实账号、Windows 桌面和音频/高 DPI 仍需人工验收。
 
 ## 参考与致谢
 

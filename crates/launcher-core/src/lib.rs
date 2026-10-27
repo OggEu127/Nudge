@@ -1,5 +1,8 @@
 //! Top-level application coordination for Nudge.
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+compile_error!("Nudge supports Windows x86-64 only");
+
 pub mod auth;
 pub mod config;
 pub mod error;

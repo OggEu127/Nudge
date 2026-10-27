@@ -1,5 +1,8 @@
 //! Minecraft metadata, installation, and launch functionality.
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+compile_error!("Nudge supports Windows x86-64 only");
+
 mod error;
 pub mod fabric;
 pub mod java;
@@ -7,7 +10,6 @@ pub mod launch;
 pub mod manifest;
 pub mod metadata;
 pub mod natives;
-mod process;
 pub mod resolver;
 pub mod rules;
 

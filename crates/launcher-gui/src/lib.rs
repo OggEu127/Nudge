@@ -1,5 +1,8 @@
 //! Responsive native desktop frontend; installation and launch work lives in core.
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+compile_error!("Nudge supports Windows x86-64 only");
+
 mod app;
 mod branding;
 mod covers;

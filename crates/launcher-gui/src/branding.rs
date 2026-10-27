@@ -9,7 +9,7 @@ use image::{Rgba, RgbaImage};
 /// Source artwork handed to the desktop shell as the window icon.
 const WINDOW_ICON_PNG: &[u8] =
     include_bytes!("../../../assets/branding/nudge-icon-blue-violet.png");
-/// Runtime icon edge. X11 transports `_NET_WM_ICON` in one property request, so
+/// Runtime icon edge; keep the image bounded before sending it to the window manager.
 /// 512 × 512 RGBA is too large for some servers; 128 keeps the request in bounds.
 const WINDOW_ICON_SIZE: u32 = 128;
 /// Logo sheet holding both the square icon and the lowercase wordmark.

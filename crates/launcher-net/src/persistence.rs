@@ -23,13 +23,8 @@ pub fn check_path(path: &Path) -> io::Result<()> {
         }
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
-                #[cfg(windows)]
-                let reparse = {
-                    use std::os::windows::fs::MetadataExt as _;
-                    metadata.file_attributes() & 0x400 != 0
-                };
-                #[cfg(not(windows))]
-                let reparse = false;
+                use std::os::windows::fs::MetadataExt as _;
+                let reparse = metadata.file_attributes() & 0x400 != 0;
                 if metadata.file_type().is_symlink() || reparse {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -44,25 +39,21 @@ pub fn check_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Syncs a directory entry on Unix; other platforms use atomic replacement only.
+/// Rechecks a Windows directory used for an atomic replacement.
 ///
-/// Windows directory handles cannot portably provide Unix directory-fsync
-/// semantics through this safe API. No power-loss durability claim is made on
-/// those platforms. An error after rename means new bytes may already be visible.
+/// Safe Rust does not provide a directory durability sync on Windows. An error
+/// after rename means new bytes may already be visible.
 ///
 /// # Errors
-/// Propagates Unix directory-open/sync failures and unsafe path errors.
+/// Propagates unsafe path errors.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
-    check_path(path)?;
-    #[cfg(unix)]
-    fs::File::open(path)?.sync_all()?;
-    Ok(())
+    check_path(path)
 }
 
-/// Creates missing directories and syncs each new parent entry on Unix.
+/// Creates missing directories with path checks before and after creation.
 ///
 /// # Errors
-/// Rejects links/non-directories and propagates creation or sync errors.
+/// Rejects links/non-directories and propagates creation or path-check errors.
 pub fn create_dir_all(path: &Path) -> io::Result<()> {
     let path = if path.as_os_str().is_empty() {
         Path::new(".")
@@ -100,14 +91,14 @@ pub fn create_dir_all(path: &Path) -> io::Result<()> {
     sync_directory(parent)
 }
 
-/// Flushes and atomically replaces a file, then syncs its parent on Unix.
+/// Flushes and atomically replaces a file, then rechecks its parent.
 ///
 /// The temporary must reside in the destination's directory. The caller still
 /// owns semantic validation (hashes, JSON schema) before calling this method.
 ///
 /// # Errors
-/// Returns flush, path-check, rename or directory-sync errors. A directory-sync
-/// error occurs after replacement; reload before deciding how to retry.
+/// Returns flush, path-check or rename errors. A final path-check error occurs
+/// after replacement; reload before deciding how to retry.
 pub fn persist(temporary: NamedTempFile, destination: &Path) -> io::Result<()> {
     commit_with(temporary, destination, |_| Ok(()))
 }
@@ -184,28 +175,6 @@ mod tests {
             persist(retry, &destination)?;
             assert_eq!(fs::read(&destination)?, b"retry");
         }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn late_link_substitution_is_rejected_without_touching_external_file() -> io::Result<()> {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir()?;
-        let outside = tempfile::tempdir()?;
-        let external = outside.path().join("private");
-        fs::write(&external, b"private")?;
-        let destination = root.path().join("record");
-        let mut temporary = NamedTempFile::new_in(root.path())?;
-        temporary.write_all(b"replacement")?;
-        let result = commit_with(temporary, &destination, |stage| {
-            if stage == Stage::Rename {
-                symlink(&external, &destination)?;
-            }
-            Ok(())
-        });
-        assert!(result.is_err());
-        assert_eq!(fs::read(external)?, b"private");
         Ok(())
     }
 }

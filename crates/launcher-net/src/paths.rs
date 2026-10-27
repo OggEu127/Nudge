@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::Error;
 
-/// Validates a relative path with consistent Windows, Linux, and macOS semantics.
+/// Validates a relative path against Windows naming and alias rules.
 ///
 /// # Errors
 /// Rejects traversal, absolute/drive paths, aliases, device names, controls and

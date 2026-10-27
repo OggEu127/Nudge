@@ -9,7 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(target_os = "windows")]
 use std::process::Command;
 
 use anyhow::Result;
@@ -2901,18 +2900,13 @@ fn open_directory(path: &Path) -> Result<()> {
     if !metadata.is_dir() {
         anyhow::bail!("目标不是目录：{}", path.display());
     }
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("explorer")
-            .arg(path)
-            .spawn()
-            .map_err(|error| anyhow::anyhow!("无法打开文件资源管理器：{error}"))?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        anyhow::bail!("文件夹快捷方式仅在 Windows 版中提供。")
-    }
+    let system_root = std::env::var_os("SystemRoot")
+        .ok_or_else(|| anyhow::anyhow!("无法定位 Windows 系统目录"))?;
+    Command::new(PathBuf::from(system_root).join("explorer.exe"))
+        .arg(path)
+        .spawn()
+        .map_err(|error| anyhow::anyhow!("无法打开文件资源管理器：{error}"))?;
+    Ok(())
 }
 
 // --------------------------------------------------------------------------

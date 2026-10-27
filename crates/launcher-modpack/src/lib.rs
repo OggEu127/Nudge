@@ -1,6 +1,9 @@
 //! Content-based MRPACK inspection and immutable, executable installation plans.
 //! Parsing performs no network access or destination writes.
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+compile_error!("Nudge supports Windows x86-64 only");
+
 mod archive;
 mod model;
 

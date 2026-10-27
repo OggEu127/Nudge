@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared by normal CI and the Windows release build (Git Bash).
+# Used by Windows CI and release builds through Git Bash.
 set -euo pipefail
 
 # Actions invokes Bash with -e -o pipefail. Capture both pipeline statuses before

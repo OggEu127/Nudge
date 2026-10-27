@@ -66,7 +66,7 @@ Minecraft launcher/entitlement/profile 的完整公开稳定契约并不与 OAut
 
 ## 凭据存储
 
-使用 [keyring](https://docs.rs/keyring/4.2.0/keyring/) 的平台系统凭据后端：Windows Credential Manager、macOS Keychain、Linux Secret Service。阻塞凭据操作进入后台 worker，不阻塞图形界面。
+通过 `keyring-core` 和 `windows-native-keyring-store` 使用 Windows Credential Manager。阻塞凭据操作进入后台 worker，不阻塞图形界面。
 
 - 只有刷新令牌进入系统凭据库，没有明文文件回退。
 - `accounts.sqlite3` 只存 UUID、档案名称和公开 client ID；配置只存应用 ID 与所选账号。
@@ -74,7 +74,7 @@ Minecraft launcher/entitlement/profile 的完整公开稳定契约并不与 OAut
 - 敏感类型的 Debug 输出脱敏，认证传输禁止重定向并限制正文大小。
 - 账号写入/刷新/退出串行化，避免并发刷新和退出相互覆盖。
 
-Linux 无桌面 Secret Service、凭据库未解锁、沙盒不允许访问或系统拒绝写入时会明确报错。复制数据目录不会复制系统凭据；移动目录也可能改变凭据命名空间，应重新登录。
+Windows 凭据库不可用或系统拒绝写入时会明确报错。复制数据目录不会复制系统凭据；移动目录也可能改变凭据命名空间，应重新登录。
 
 ## 常见失败
 

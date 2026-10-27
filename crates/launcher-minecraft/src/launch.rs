@@ -185,7 +185,7 @@ pub struct LaunchOptions {
 impl Default for LaunchOptions {
     fn default() -> Self {
         Self {
-            java: PathBuf::from(if cfg!(windows) { "java.exe" } else { "java" }),
+            java: PathBuf::from("java.exe"),
             min_memory_mib: 512,
             max_memory_mib: 2048,
             platform: Platform::host(),
@@ -406,10 +406,7 @@ pub fn build_launch_spec(
         ("launcher_version", env!("CARGO_PKG_VERSION").to_owned()),
         ("classpath", classpath),
         ("library_directory", path_text(&root.join("libraries"))?),
-        (
-            "classpath_separator",
-            if cfg!(windows) { ";" } else { ":" }.to_owned(),
-        ),
+        ("classpath_separator", ";".to_owned()),
     ]);
     if let Some((width, height)) = options.resolution {
         variables.insert("resolution_width", width.to_string());
@@ -498,7 +495,7 @@ pub enum OutputStream {
 /// Final operating-system child status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProcessExit {
-    /// Exit code, absent for signal termination on Unix.
+    /// Exit code, if the child reported one.
     pub code: Option<i32>,
     /// Whether the child returned success.
     pub success: bool,
@@ -659,11 +656,9 @@ pub fn spawn_game_with_resource<T: Send + 'static>(
     for name in ["JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"] {
         command.env_remove(name);
     }
-    let mut child = crate::process::spawn_with_busy_retry(&mut command).map_err(|source| {
-        Error::ProcessStart {
-            path: spec.executable.clone(),
-            source,
-        }
+    let mut child = command.spawn().map_err(|source| Error::ProcessStart {
+        path: spec.executable.clone(),
+        source,
     })?;
     let pid = child.id();
     let stdout = child.stdout.take().ok_or_else(|| Error::ProcessStart {
@@ -1066,236 +1061,5 @@ mod tests {
         )
         .expect_err("unknown placeholder");
         assert!(matches!(error, crate::Error::UnresolvedPlaceholder(_)));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn captures_both_streams_then_exit_and_preserves_argument_boundaries() {
-        use std::{ffi::OsString, os::unix::fs::PermissionsExt};
-
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let executable = directory.path().join("fake java");
-        std::fs::write(
-            &executable,
-            "#!/bin/sh\nprintf '%s' \"$1\"\nprintf 'error output' >&2\nexit 7\n",
-        )
-        .expect("write script");
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-            .expect("permissions");
-        let spec = super::LaunchSpec {
-            executable,
-            working_directory: directory.path().to_path_buf(),
-            arguments: vec![OsString::from("one argument with spaces; $HOME")],
-        };
-        let mut process = super::spawn_game(spec).expect("spawn fixture");
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let mut exit = None;
-        while let Some(event) = process.next_event().await {
-            match event {
-                super::ProcessEvent::Output {
-                    stream: super::OutputStream::Stdout,
-                    bytes,
-                } => stdout.extend(bytes),
-                super::ProcessEvent::Output {
-                    stream: super::OutputStream::Stderr,
-                    bytes,
-                } => stderr.extend(bytes),
-                super::ProcessEvent::Exited(status) => exit = Some(status),
-                super::ProcessEvent::Started { .. } => {}
-            }
-        }
-        assert_eq!(stdout, b"one argument with spaces; $HOME");
-        assert_eq!(stderr, b"error output");
-        assert_eq!(exit.expect("exit event").code, Some(7));
-        assert_eq!(
-            process.wait().await.expect("supervisor status").code,
-            Some(7)
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cancellation_reaps_the_child() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let spec = super::LaunchSpec {
-            executable: "/bin/sh".into(),
-            working_directory: directory.path().to_path_buf(),
-            arguments: vec!["-c".into(), "exec sleep 30".into()],
-        };
-        let process = super::spawn_game(spec).expect("spawn fixture");
-        assert!(process.cancel());
-        let exit = tokio::time::timeout(std::time::Duration::from_secs(5), process.wait())
-            .await
-            .expect("cancellation timeout")
-            .expect("cancelled status");
-        assert!(exit.cancelled);
-        assert!(!exit.success);
-    }
-
-    #[cfg(unix)]
-    async fn stop_fixture_descendant(pid: u32) -> std::io::Result<()> {
-        // The ID comes only from our fixed test shell, not launcher metadata.
-        // Capture diagnostics rather than emitting an expected ESRCH race.
-        let output = tokio::process::Command::new("/bin/kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .output()
-            .await?;
-        if !output.status.success() {
-            let probe = tokio::process::Command::new("/bin/kill")
-                .arg("-0")
-                .arg(pid.to_string())
-                .output()
-                .await?;
-            if probe.status.success() {
-                return Err(std::io::Error::other(
-                    "test descendant could not be terminated",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn inherited_pipes_cannot_prevent_a_natural_terminal_event()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::time::Duration;
-        let directory = tempfile::tempdir()?;
-        let spec = super::LaunchSpec {
-            executable: "/bin/sh".into(),
-            working_directory: directory.path().to_owned(),
-            arguments: vec![
-                "-c".into(),
-                "sleep 30 & printf '%s\\n' \"$!\"; exit 0".into(),
-            ],
-        };
-        let mut process = super::spawn_game(spec)?;
-        let mut output = Vec::new();
-        let terminal = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match process.next_event().await {
-                    Some(super::ProcessEvent::Output {
-                        stream: super::OutputStream::Stdout,
-                        bytes,
-                    }) => output.extend(bytes),
-                    Some(super::ProcessEvent::Exited(exit)) => break Ok(exit),
-                    Some(_) => {}
-                    None => break Err("terminal event was missing"),
-                }
-            }
-        })
-        .await?;
-        let descendant = std::str::from_utf8(&output)?.trim().parse::<u32>()?;
-        stop_fixture_descendant(descendant).await?;
-        let terminal = terminal?;
-        assert!(terminal.success);
-        assert!(!terminal.cancelled);
-        assert_eq!(process.wait().await?, terminal);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn dropped_consumers_reap_before_releasing_owned_resources_despite_inherited_pipes()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::time::Duration;
-        struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
-        impl Drop for NotifyOnDrop {
-            fn drop(&mut self) {
-                if let Some(sender) = self.0.take() {
-                    let _ = sender.send(());
-                }
-            }
-        }
-        let directory = tempfile::tempdir()?;
-        let (released, mut resource_released) = tokio::sync::oneshot::channel();
-        let spec = super::LaunchSpec {
-            executable: "/bin/sh".into(),
-            working_directory: directory.path().to_owned(),
-            arguments: vec![
-                "-c".into(),
-                "sleep 30 & printf '%s\\n' \"$!\"; exec sleep 30".into(),
-            ],
-        };
-        let mut process = super::spawn_game_with_resource(spec, NotifyOnDrop(Some(released)))?;
-        let mut output = Vec::new();
-        let mut pid = None;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !output.contains(&b'\n') {
-                match process.next_event().await {
-                    Some(super::ProcessEvent::Started { pid: child_pid }) => pid = child_pid,
-                    Some(super::ProcessEvent::Output {
-                        stream: super::OutputStream::Stdout,
-                        bytes,
-                    }) => output.extend(bytes),
-                    Some(_) => {}
-                    None => return Err("process ended before fixture was ready"),
-                }
-            }
-            Ok(())
-        })
-        .await??;
-        let descendant = std::str::from_utf8(&output)?.trim().parse::<u32>()?;
-        assert!(matches!(
-            resource_released.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
-        drop(process);
-        let released = tokio::time::timeout(Duration::from_secs(5), resource_released).await;
-        stop_fixture_descendant(descendant).await?;
-        released??;
-        let probe = tokio::process::Command::new("/bin/kill")
-            .arg("-0")
-            .arg(pid.ok_or("child PID unavailable")?.to_string())
-            .output()
-            .await?;
-        assert!(
-            !probe.status.success(),
-            "owned resources were released before the direct child was reaped"
-        );
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn output_worker_panics_still_emit_failed_terminal_events()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let child = tokio::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exec sleep 30")
-            .kill_on_drop(true)
-            .spawn()?;
-        let reader: tokio::task::JoinHandle<Result<(), crate::Error>> = tokio::spawn(async {
-            panic!("synthetic output worker failure");
-        });
-        let other = tokio::spawn(async { Ok(()) });
-        let (_cancellation, cancelled) = tokio::sync::watch::channel(false);
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            super::supervise_game(
-                child,
-                [reader, other],
-                cancelled,
-                &sender,
-                std::path::Path::new("/bin/sh"),
-            ),
-        )
-        .await?;
-        let error = result.err().ok_or("reader panic must fail supervision")?;
-        assert!(
-            matches!(receiver.recv().await, Some(super::ProcessEvent::Exited(exit)) if !exit.success)
-        );
-        assert!(matches!(
-            error,
-            crate::Error::Io {
-                operation: "join Minecraft output reader",
-                ..
-            }
-        ));
-        assert!(!format!("{error}").contains("synthetic output worker failure"));
-        Ok(())
     }
 }

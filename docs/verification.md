@@ -1,10 +1,14 @@
 # 验证记录与验收边界
 
-本文件记录当前开发过程实际观察到的结果，不以工作流配置代替远端执行，也不以 mock 替代正版账号或 Windows 桌面验收。记录基准日为 **2026-10-24 UTC**；后续代码修改仍需重新运行质量检查。
+本文件按日期记录实际观察到的结果，不以工作流配置代替远端执行，也不以 mock 代替正版账号或 Windows 桌面验收。后文的 Linux/Xvfb 记录属于 Windows 专用化之前的历史版本，不代表当前源码支持其他系统。
 
-## 2026-10-27 Windows x64 推送前检查
+## 2026-10-27 Windows 专用化检查
 
-当前仅面向 Windows x86-64 交付。此次未提交源码在 Linux 主机上通过格式检查、全特性工作区测试（**155 项通过，0 失败**）、严格 Clippy、`RUSTDOCFLAGS='-D warnings'` 文档构建及 CI 测试日志脚本检查。使用本机 LLVM-MinGW 工具链，通过 `x86_64-pc-windows-gnullvm` 的全工作区、全目标、全特性交叉编译检查和严格 Clippy；Windows 专用测试仅编译，未在 Windows 执行。
+源码、CI 和发布任务均已收敛到 Windows x86-64；其他系统的运行分支和专用测试已移除，非 Windows x86-64 目标在编译期明确拒绝。本机已通过格式检查、`x86_64-pc-windows-gnullvm` 的全工作区、全目标、全特性交叉编译与严格 Clippy；同一目标的测试程序已全部编译并链接，`RUSTDOCFLAGS='-D warnings'` 文档构建也通过。CLI 与 GUI 的 Release 交叉构建已产出 x86-64 Windows PE 文件；两个工作流的三个 job 均配置为 `windows-latest`。Windows 原生 MSVC CI、测试执行、桌面和真实账号验收仍待后续提交与人工检查；交叉构建不等于这些验收。
+
+## 历史记录：2026-10-27 Windows x64 推送前检查
+
+提交 `a461f12` 前的源码在 Linux 主机上通过格式检查、全特性工作区测试（**155 项通过，0 失败**）、严格 Clippy、`RUSTDOCFLAGS='-D warnings'` 文档构建及 CI 测试日志脚本检查。使用本机 LLVM-MinGW 工具链，通过 `x86_64-pc-windows-gnullvm` 的全工作区、全目标、全特性交叉编译检查和严格 Clippy；Windows 专用测试仅编译，未在 Windows 执行。
 
 这些结果不等于 Windows MSVC Release 构建或桌面验收。根目录现存 EXE/ZIP 是先前源码的构建，不对应当前待推送改动；真实 Microsoft 登录仍搁置，实例删除/重装/升级的上层协调器也尚未实现。推送后的 Windows 原生 CI 和新产物需另行核查。
 
@@ -100,6 +104,6 @@
 - Windows runner 原生 CI、干净 Windows 桌面中的拖放、路径、凭据库与游戏启动；Linux 交叉编译不能替代。
 - GUI 整体交互与长时间体验、真实显示/音频设备、高 DPI 和错误恢复。
 - Windows 便携包的实际远端构建、人工下载校验、数字签名及公开发布审核。
-- Linux/macOS 扩展支持与更多历史游戏版本的兼容性矩阵。
+- 更多历史游戏版本的兼容性矩阵。
 
 当前没有因为“代码已写”“请求能返回 401”“demo 能启动”就将这些验收项记为完成。正式发行请逐项完成[发布清单](release.md)。

@@ -12,7 +12,7 @@ authors.workspace = true
 chrono.workspace = true
 directories.workspace = true
 hex.workspace = true
-keyring.workspace = true
+keyring-core.workspace = true
 launcher-minecraft.workspace = true
 launcher-modpack.workspace = true
 launcher-net.workspace = true
@@ -29,6 +29,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+windows-native-keyring-store.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies.wiremock]

@@ -848,15 +848,9 @@ pub async fn check_no_links(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt as _;
     metadata.file_attributes() & 0x400 != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(_: &std::fs::Metadata) -> bool {
-    false
 }
 
 pub(crate) async fn confined_path(root: &Path, relative: &Path) -> Result<PathBuf> {

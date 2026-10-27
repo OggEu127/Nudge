@@ -14,6 +14,7 @@ use std::{
     time::Duration,
 };
 
+use keyring_core::api::CredentialStoreApi as _;
 use launcher_minecraft::launch::LaunchIdentity;
 use launcher_net::api::{ApiClient, ApiResponse};
 use md5::{Digest as _, Md5};
@@ -221,13 +222,18 @@ pub trait CredentialStore: Send + Sync + 'static {
     fn delete(&self, key: String) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
-/// System-provided Windows Credential Manager, macOS Keychain or Secret Service.
+/// Windows Credential Manager, with no file-based credential fallback.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemCredentials;
 
-fn credential_read_error(error: &keyring::Error) -> Error {
+fn system_entry(key: &str) -> keyring_core::Result<keyring_core::Entry> {
+    let store = windows_native_keyring_store::Store::new()?;
+    store.build(KEYRING_SERVICE, key, None)
+}
+
+fn credential_read_error(error: &keyring_core::Error) -> Error {
     match error {
-        keyring::Error::NoEntry => Error::ReauthenticationRequired,
+        keyring_core::Error::NoEntry => Error::ReauthenticationRequired,
         _ => Error::CredentialStore("read"),
     }
 }
@@ -235,8 +241,7 @@ fn credential_read_error(error: &keyring::Error) -> Error {
 impl CredentialStore for SystemCredentials {
     async fn read(&self, key: String) -> Result<Zeroizing<String>, Error> {
         tokio::task::spawn_blocking(move || {
-            let entry = keyring::Entry::new(KEYRING_SERVICE, &key)
-                .map_err(|_| Error::CredentialStore("open"))?;
+            let entry = system_entry(&key).map_err(|_| Error::CredentialStore("open"))?;
             entry
                 .get_password()
                 .map(Zeroizing::new)
@@ -248,8 +253,7 @@ impl CredentialStore for SystemCredentials {
 
     async fn write(&self, key: String, token: Zeroizing<String>) -> Result<(), Error> {
         tokio::task::spawn_blocking(move || {
-            let entry = keyring::Entry::new(KEYRING_SERVICE, &key)
-                .map_err(|_| Error::CredentialStore("open"))?;
+            let entry = system_entry(&key).map_err(|_| Error::CredentialStore("open"))?;
             entry
                 .set_password(&token)
                 .map_err(|_| Error::CredentialStore("write"))
@@ -260,10 +264,9 @@ impl CredentialStore for SystemCredentials {
 
     async fn delete(&self, key: String) -> Result<(), Error> {
         tokio::task::spawn_blocking(move || {
-            let entry = keyring::Entry::new(KEYRING_SERVICE, &key)
-                .map_err(|_| Error::CredentialStore("open"))?;
+            let entry = system_entry(&key).map_err(|_| Error::CredentialStore("open"))?;
             match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
                 Err(_) => Err(Error::CredentialStore("delete from")),
             }
         })
@@ -1176,7 +1179,7 @@ mod tests {
     #[test]
     fn missing_system_credential_requests_sign_in() {
         assert!(matches!(
-            super::credential_read_error(&keyring::Error::NoEntry),
+            super::credential_read_error(&keyring_core::Error::NoEntry),
             Error::ReauthenticationRequired
         ));
     }
@@ -2020,25 +2023,6 @@ mod tests {
         );
         drop(lease);
         tokio::time::timeout(Duration::from_secs(2), waiting).await??;
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn account_database_and_lock_symlinks_are_rejected() -> TestResult {
-        let server = MockServer::start().await;
-        let root = tempfile::tempdir()?;
-        let sentinel = root.path().join("sentinel");
-        std::fs::write(&sentinel, "untouched")?;
-        let auth = service(root.path(), &server, MemoryStore::default())?;
-        std::os::unix::fs::symlink(&sentinel, root.path().join("accounts.sqlite3"))?;
-        assert!(matches!(auth.accounts().await, Err(Error::Storage(_))));
-        std::os::unix::fs::symlink(&sentinel, root.path().join("accounts.lock"))?;
-        assert!(matches!(
-            auth.lock(&CancellationToken::new()).await,
-            Err(Error::Storage(_))
-        ));
-        assert_eq!(std::fs::read_to_string(sentinel)?, "untouched");
         Ok(())
     }
 }

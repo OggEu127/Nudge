@@ -24,17 +24,13 @@ launcher-core.workspace = true
 launcher-minecraft.workspace = true
 launcher-modpack.workspace = true
 launcher-net.workspace = true
+rfd = { version = "0.17.2", default-features = false }
 thiserror.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-
-[target.'cfg(target_os = "windows")'.dependencies]
-# A safe native startup-error dialog remains available when the release GUI
-# intentionally has no console. No GTK/portal runtime is introduced on Linux.
-rfd = { version = "0.17.2", default-features = false }
 
 [dev-dependencies]
 serde_json.workspace = true

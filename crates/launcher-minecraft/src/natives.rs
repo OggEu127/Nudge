@@ -6,6 +6,7 @@
 //! directory shared with a concurrently hostile process safe: portable `std`
 //! filesystem APIs cannot atomically resolve paths without following links.
 
+use std::os::windows::fs::MetadataExt as _;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -446,16 +447,8 @@ fn is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        // Covers junctions and other redirections in addition to symlinks.
-        metadata.file_attributes() & 0x400 != 0
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
+    // Covers junctions and other redirections in addition to symlinks.
+    metadata.file_attributes() & 0x400 != 0
 }
 
 fn reject_symlink_components(path: &Path) -> Result<(), Error> {
@@ -744,35 +737,6 @@ mod tests {
             extract_natives(root.path(), &[archive], &root.path().join("natives")),
             Err(Error::UnsafeArchive { .. })
         ));
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_filesystem_symlinks_in_inputs_and_destination()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir()?;
-        let archive = write_archive(root.path(), "native.jar", &[("native.so", b"native")])?;
-        symlink(
-            root.path().join("native.jar"),
-            root.path().join("linked.jar"),
-        )?;
-        let linked = NativeArchive {
-            path: PathBuf::from("linked.jar"),
-            excludes: vec![],
-        };
-        assert!(matches!(
-            extract_natives(root.path(), &[linked], &root.path().join("natives")),
-            Err(Error::UnsafeArchive { .. })
-        ));
-        let outside = tempfile::tempdir()?;
-        symlink(outside.path(), root.path().join("linked"))?;
-        assert!(matches!(
-            extract_natives(root.path(), &[archive], &root.path().join("linked/natives")),
-            Err(Error::UnsafeArchive { .. })
-        ));
-        assert!(!outside.path().join("natives").exists());
         Ok(())
     }
 }

@@ -77,8 +77,8 @@ pub struct ResolvedVersion {
 
 /// Validates a portable relative path originating in untrusted metadata.
 ///
-/// Backslashes and Windows filename aliases are rejected on every host, so a
-/// plan generated on Linux cannot become unsafe when installed on Windows.
+/// Backslashes and Windows filename aliases are rejected so every planned
+/// destination is safe before installation.
 ///
 /// # Errors
 ///
@@ -422,11 +422,7 @@ fn resolve_libraries(
             push_unique(&mut classpath, path);
         }
         if let Some(classifier) = library.natives.get(&platform.os) {
-            let bits = match platform.arch.as_str() {
-                "x86" | "i386" | "i486" | "i586" | "i686" => "32",
-                _ => "64",
-            };
-            let classifier = classifier.replace("${arch}", bits);
+            let classifier = classifier.replace("${arch}", "64");
             let artifact = library
                 .downloads
                 .classifiers
@@ -683,17 +679,17 @@ mod tests {
             .expect("valid test version")
     }
 
-    fn linux() -> Platform {
+    fn windows() -> Platform {
         Platform {
-            os: "linux".to_owned(),
+            os: "windows".to_owned(),
             arch: "amd64".to_owned(),
-            version: "6.8.0".to_owned(),
+            version: "10.0.19045".to_owned(),
             features: BTreeMap::new(),
         }
     }
 
     #[test]
-    fn rejects_cross_platform_path_traversal_and_windows_aliases() {
+    fn rejects_windows_path_traversal_and_aliases() {
         for value in [
             "",
             "/root",
@@ -727,7 +723,7 @@ mod tests {
         let parent = version(serde_json::json!({
             "arguments":{"jvm":["parent"],"game":["--parent"]},
             "libraries":[{"name":"org.example:library:1"},
-                         {"name":"org.example:library:1:natives-linux"}]
+                         {"name":"org.example:library:1:natives-windows"}]
         }));
         let child = version(serde_json::json!({
             "id":"fabric", "inheritsFrom":"base", "downloads":{},
@@ -740,7 +736,7 @@ mod tests {
         assert_eq!(merged.libraries[0].name, "org.example:library:2");
         assert_eq!(
             merged.libraries[1].name,
-            "org.example:library:1:natives-linux"
+            "org.example:library:1:natives-windows"
         );
         let args = merged.arguments.expect("merged arguments");
         assert_eq!(args.jvm.len(), 2);
@@ -777,10 +773,10 @@ mod tests {
                     "path":"org/example/common/1/common-1.jar", "url":"https://example.com/common.jar",
                     "sha1":"3333333333333333333333333333333333333333", "size":1
                 }}},
-                {"name":"org.example:windows:1", "rules":[{"action":"allow","os":{"name":"windows"}}]},
-                {"name":"org.example:native:1", "natives":{"linux":"natives-linux-${arch}"},
-                 "downloads":{"classifiers":{"natives-linux-64":{
-                    "path":"org/example/native/1/native-1-natives-linux-64.jar",
+                {"name":"org.example:excluded:1", "rules":[{"action":"disallow","os":{"name":"windows"}}]},
+                {"name":"org.example:native:1", "natives":{"windows":"natives-windows-${arch}"},
+                 "downloads":{"classifiers":{"natives-windows-64":{
+                    "path":"org/example/native/1/native-1-natives-windows-64.jar",
                     "url":"https://example.com/native.jar",
                     "sha1":"4444444444444444444444444444444444444444", "size":2
                  }}}, "extract":{"exclude":["META-INF/"]}}
@@ -794,7 +790,7 @@ mod tests {
             }
         }))
         .expect("asset index");
-        let plan = resolve(&version, &assets, &linux()).expect("valid plan");
+        let plan = resolve(&version, &assets, &windows()).expect("valid plan");
         assert_eq!(plan.files.len(), 5);
         assert_eq!(plan.classpath.len(), 2);
         assert_eq!(
@@ -814,8 +810,8 @@ mod tests {
             "objects": {}
         }))
         .expect("legacy asset index");
-        let plan =
-            resolve(&version(serde_json::json!({})), &assets, &linux()).expect("valid legacy plan");
+        let plan = resolve(&version(serde_json::json!({})), &assets, &windows())
+            .expect("valid legacy plan");
         assert!(plan.game_assets_in_resources);
     }
 
@@ -825,13 +821,13 @@ mod tests {
             "objects":{"../escape":{"hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":3}}
         }))
         .expect("asset index");
-        assert!(resolve(&version(serde_json::json!({})), &unsafe_assets, &linux()).is_err());
+        assert!(resolve(&version(serde_json::json!({})), &unsafe_assets, &windows()).is_err());
         let missing_hash = version(serde_json::json!({
             "libraries":[{"name":"org.example:library:1","downloads":{"artifact":{
                 "path":"library.jar","url":"https://example.com/library.jar","size":1
             }}}]
         }));
-        assert!(resolve(&missing_hash, &AssetIndex::default(), &linux()).is_err());
+        assert!(resolve(&missing_hash, &AssetIndex::default(), &windows()).is_err());
         let collision = version(serde_json::json!({
             "libraries":[
                 {"name":"org.example:a:1","downloads":{"artifact":{
@@ -844,7 +840,7 @@ mod tests {
                 }}}
             ]
         }));
-        assert!(resolve(&collision, &AssetIndex::default(), &linux()).is_err());
+        assert!(resolve(&collision, &AssetIndex::default(), &windows()).is_err());
     }
 
     #[test]
@@ -853,7 +849,7 @@ mod tests {
             "libraries":[{"name":"net.fabricmc:fabric-loader:0.16.10",
                           "url":"https://maven.fabricmc.net/"}]
         }));
-        let plan = resolve(&version, &AssetIndex::default(), &linux()).expect("loader plan");
+        let plan = resolve(&version, &AssetIndex::default(), &windows()).expect("loader plan");
         let library = &plan.files[2];
         assert_eq!(
             library.artifact.url.as_str(),

@@ -77,4 +77,4 @@ cargo doc --locked --workspace --no-deps --open
 
 `DownloadManager::release_destinations` 在实例锁保护下接受可信旧任务，原子释放精确目的地及相应任务记录；保留文件与共享缓存，拒绝摘要已变化的旧计划。它与运行/恢复互斥；共享依赖需要上层证明没有其他所有者。上层删除/重装/升级协调器尚未实现，约束见[下载生命周期](download-lifecycle.md)。
 
-`launcher_net::persistence` 为配置及受管理内容提供文件刷盘、提交前路径复查、原子替换与 Unix 目录同步。同步失败可能发生于替换之后，调用者应重新读回，不能据错误直接假定旧内容仍在。静态路径复查不等于消除 TOCTOU。
+`launcher_net::persistence` 为配置及受管理内容提供文件刷盘、提交前后路径复查与 Windows 原子替换。替换后的复查失败可能发生于新内容已经可见时，调用者应重新读回。静态路径复查不等于消除 TOCTOU。

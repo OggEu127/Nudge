@@ -2,6 +2,9 @@
 //!
 //! All outbound requests use explicit URL, redirect, and DNS-address policies.
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+compile_error!("Nudge supports Windows x86-64 only");
+
 use std::{future::Future, sync::Arc, time::Duration};
 
 use futures_util::StreamExt as _;

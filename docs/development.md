@@ -2,37 +2,26 @@
 
 ## 工具链
 
-工作区使用 Rust 2024 Edition、Cargo resolver 3；声明的 MSRV 为 1.99，`rust-toolchain.toml` 跟随 stable，并要求 rustfmt/Clippy。CI 目前安装浮动 stable，尚未单独锁定并验证 1.99；最低版本声明应视为待自动化确认的目标，而不是已经由流水线证明的事实。工作树包含应用应随仓库分发的 `Cargo.lock`，CI 和发布命令使用 `--locked`。工程文件随 v0.1.0 首次推送进入远端，`.github/workflows/` 从该次推送起生效；首次运行结果仍需在 Actions 中观察，详见[验证记录](verification.md)。
+工作区只支持 Windows x86-64，使用 Rust 2024 Edition、Cargo resolver 3；声明的 MSRV 为 1.99，`rust-toolchain.toml` 跟随 stable，并要求 rustfmt/Clippy。CI 目前安装浮动 stable，尚未单独锁定并验证 1.99；最低版本声明应视为待自动化确认的目标。`Cargo.lock` 随仓库分发，CI 和发布命令使用 `--locked`。
 
 仓库的 `.gitattributes` 要求文本文件以 LF 检出，避免 Windows runner 上的格式检查受 CRLF 转换影响。
 
-Windows 推荐 `x86_64-pc-windows-msvc`，安装 Visual Studio Build Tools 的 C++ 桌面工作负载与 Windows SDK。SQLite 使用 bundled 编译，无需安装独立数据库服务。
-
-Linux 需要 C/C++ 工具链和图形开发包。Ubuntu 示例：
-
-```sh
-sudo apt-get update
-sudo apt-get install --no-install-recommends build-essential pkg-config \
-  libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev \
-  libgl1-mesa-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-  libfontconfig1-dev libdbus-1-dev
-```
-
-GUI 运行需要桌面显示服务和可用图形驱动；无显示的终端不能用一次 `cargo build` 证明窗口正常。Linux 账号持久化还需要用户会话中的 Secret Service 凭据库。
+使用 `x86_64-pc-windows-msvc`，安装 Visual Studio Build Tools 的 C++ 桌面工作负载与 Windows SDK。SQLite 使用 bundled 编译，无需安装独立数据库服务。GUI 运行需要 Windows 桌面和可用图形驱动；一次 `cargo build` 不能证明窗口正常。
 
 ## 必须执行的检查
 
-```sh
+```powershell
 cargo fmt --all -- --check
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-features
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+$env:RUSTDOCFLAGS = '-D warnings'
+cargo doc --locked --workspace --no-deps
 ```
 
-Windows PowerShell 设置 rustdoc 参数时使用 `$env:RUSTDOCFLAGS = '-D warnings'`。质量检查失败时修复原因，不删除测试或放宽错误来制造通过结果。
+质量检查失败时修复原因，不删除测试或放宽错误来制造通过结果。
 
-普通 CI 和 Windows 发布构建共用 `.github/scripts/run-tests.sh`。测试失败时保留 Cargo 的退出码，在页面显示包含 panic 详情的错误摘要，并将完整的 `test-output.log` 作为 Actions 附件保留 14 天。没有进入测试步骤时不生成日志；日志写入失败也会使任务失败。Linux CI 另外运行 `node .github/scripts/test-run-tests.cjs`，检查失败输出和退出码不会被日志处理掩盖。
+普通 CI 和 Windows 发布构建都在 Windows runner 上通过 Git Bash 运行 `.github/scripts/run-tests.sh`。测试失败时保留 Cargo 的退出码，在页面显示包含 panic 详情的错误摘要，并将完整的 `test-output.log` 作为 Actions 附件保留 14 天。没有进入测试步骤时不生成日志；日志写入失败也会使任务失败。
 
 [`cargo doc`](https://doc.rust-lang.org/cargo/commands/cargo-doc.html) 生成的入口在 `target/doc/launcher_core/index.html`，其他领域 crate 也有独立文档。
 
@@ -47,10 +36,10 @@ Windows PowerShell 设置 rustdoc 参数时使用 `$env:RUSTDOCFLAGS = '-D warni
 
 ## 本地隔离与诊断
 
-```sh
-cargo run --locked -p launcher-cli -- \
+```powershell
+cargo run --locked -p launcher-cli -- `
   --config target/dev-config.json --data-dir target/dev-data config init
-cargo run --locked -p launcher-cli -- \
+cargo run --locked -p launcher-cli -- `
   --config target/dev-config.json --data-dir target/dev-data manifest --limit 5
 ```
 
@@ -60,10 +49,10 @@ cargo run --locked -p launcher-cli -- \
 
 仓库提供固定的清单与 Rust 归档生成器，不分发第三方 Mod JAR：
 
-```sh
+```powershell
 cargo run --locked -p launcher-modpack --example smoke_pack -- target/smoke.mrpack
-cargo run --locked -p launcher-cli -- \
-  --config target/dev-config.json --data-dir target/dev-data \
+cargo run --locked -p launcher-cli -- `
+  --config target/dev-config.json --data-dir target/dev-data `
   import target/smoke.mrpack --instance smoke
 ```
 

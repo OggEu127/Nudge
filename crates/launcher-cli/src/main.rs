@@ -1,5 +1,8 @@
 //! Nudge command-line frontend.
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+compile_error!("Nudge supports Windows x86-64 only");
+
 use std::io::Write as _;
 use std::path::PathBuf;
 

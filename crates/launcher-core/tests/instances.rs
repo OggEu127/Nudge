@@ -783,29 +783,6 @@ async fn windows_junctions_are_rejected_by_all_ancestor_checks() {
     );
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn rejects_a_symlinked_instance_directory_before_any_download() {
-    let fixture = Fixture::new().await;
-    let outside = tempfile::tempdir().expect("external directory");
-    let instances = fixture.directory.path().join("instances");
-    tokio::fs::create_dir_all(&instances)
-        .await
-        .expect("create instances directory");
-    std::os::unix::fs::symlink(outside.path(), instances.join("demo"))
-        .expect("symlink fixture instance");
-    assert!(
-        fixture
-            .manager
-            .install_profile("demo", "fixture-version", fixture.metadata.clone(), |_| {})
-            .await
-            .is_err()
-    );
-    assert_eq!(fixture.request_paths().await, [] as [String; 0]);
-    assert!(!outside.path().join("instance.json").exists());
-    assert!(!outside.path().join("game").exists());
-}
-
 #[tokio::test]
 async fn failed_install_retains_an_incomplete_record_and_resumes() {
     let fixture = Fixture::new().await;

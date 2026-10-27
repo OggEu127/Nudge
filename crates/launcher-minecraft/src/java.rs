@@ -88,11 +88,9 @@ pub async fn inspect_java(path: &Path) -> Result<JavaRuntime, Error> {
     for name in ["JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"] {
         command.env_remove(name);
     }
-    let mut child = crate::process::spawn_with_busy_retry(&mut command).map_err(|source| {
-        Error::JavaInspection {
-            path: executable.clone(),
-            source,
-        }
+    let mut child = command.spawn().map_err(|source| Error::JavaInspection {
+        path: executable.clone(),
+        source,
     })?;
     let stdout = child.stdout.take().ok_or_else(|| Error::JavaInspection {
         path: executable.clone(),
@@ -168,14 +166,11 @@ pub async fn inspect_java(path: &Path) -> Result<JavaRuntime, Error> {
 }
 
 fn java_name() -> &'static str {
-    if cfg!(windows) { "java.exe" } else { "java" }
+    "java.exe"
 }
 
 fn add_home(candidates: &mut Vec<PathBuf>, home: &Path) {
     candidates.push(home.join("bin").join(java_name()));
-    if cfg!(target_os = "macos") {
-        candidates.push(home.join("Contents/Home/bin").join(java_name()));
-    }
 }
 
 fn add_installation_root(candidates: &mut Vec<PathBuf>, root: &Path) {
@@ -205,31 +200,11 @@ fn discovery_candidates() -> Vec<PathBuf> {
     if let Some(path) = env::var_os("PATH") {
         candidates.extend(path_java_candidates(&path));
     }
-    if cfg!(windows) {
-        for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
-            if let Some(root) = env::var_os(variable) {
-                for vendor in ["Java", "Eclipse Adoptium", "Microsoft", "Azul Systems"] {
-                    add_installation_root(&mut candidates, &Path::new(&root).join(vendor));
-                }
+    for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Some(root) = env::var_os(variable) {
+            for vendor in ["Java", "Eclipse Adoptium", "Microsoft", "Azul Systems"] {
+                add_installation_root(&mut candidates, &Path::new(&root).join(vendor));
             }
-        }
-    } else if cfg!(target_os = "macos") {
-        add_installation_root(
-            &mut candidates,
-            Path::new("/Library/Java/JavaVirtualMachines"),
-        );
-        if let Some(home) = env::var_os("HOME") {
-            add_installation_root(
-                &mut candidates,
-                &Path::new(&home).join("Library/Java/JavaVirtualMachines"),
-            );
-        }
-        for root in ["/opt/homebrew/opt/openjdk", "/usr/local/opt/openjdk"] {
-            add_home(&mut candidates, Path::new(root));
-        }
-    } else {
-        for root in ["/usr/lib/jvm", "/usr/java", "/opt/java", "/opt/jdk"] {
-            add_installation_root(&mut candidates, Path::new(root));
         }
     }
     candidates
@@ -241,17 +216,12 @@ fn matches_host_architecture(runtime: &JavaRuntime) -> bool {
         // their version report; callers can make a stricter policy decision.
         return true;
     };
-    match env::consts::ARCH {
-        "x86_64" => matches!(architecture, "amd64" | "x86_64"),
-        "x86" => matches!(architecture, "x86" | "i386" | "i486" | "i586" | "i686"),
-        "aarch64" => matches!(architecture, "aarch64" | "arm64"),
-        host => architecture == host,
-    }
+    matches!(architecture, "amd64" | "x86_64")
 }
 
 /// Finds an exact-major runtime compatible with the host's native libraries,
 /// preferring an explicit path, then `JAVA_HOME`, `PATH`, and conventional
-/// operating-system installation directories.
+/// Windows installation directories.
 ///
 /// An explicit executable is authoritative: failure or a version mismatch is
 /// reported instead of silently selecting another runtime.
@@ -283,7 +253,7 @@ pub async fn discover_java(
                 "Java executable `{}` has architecture `{}`, incompatible with host `{}` native libraries",
                 runtime.executable.display(),
                 runtime.architecture.as_deref().unwrap_or("unknown"),
-                env::consts::ARCH
+                "x86_64"
             )));
         }
         return Ok(runtime);
@@ -353,88 +323,5 @@ mod tests {
         ] {
             assert_eq!(parse_java_major(version), expected, "{version}");
         }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn inspects_script_path_with_spaces_and_rejects_wrong_major() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let executable = directory.path().join("test java");
-        std::fs::write(
-            &executable,
-            "#!/bin/sh\nprintf '    java.version = 21.0.6\\n    os.arch = amd64\\n' >&2\n",
-        )
-        .expect("write fixture");
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-            .expect("executable permissions");
-        let runtime = super::inspect_java(&executable).await.expect("inspection");
-        assert_eq!(runtime.major, 21);
-        assert_eq!(runtime.architecture.as_deref(), Some("amd64"));
-        assert!(super::discover_java(17, Some(&executable)).await.is_err());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn rejects_explicit_runtime_for_another_architecture() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let executable = directory.path().join("java");
-        std::fs::write(
-            &executable,
-            "#!/bin/sh\nprintf '    java.version = 21.0.6\\n    os.arch = incompatible-test-arch\\n' >&2\n",
-        )
-        .expect("write fixture");
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-            .expect("executable permissions");
-        let error = super::discover_java(21, Some(&executable))
-            .await
-            .expect_err("foreign architecture must be rejected");
-        assert!(
-            matches!(&error, crate::Error::InvalidMetadata(message) if message.contains("incompatible with host")),
-            "{error}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn rejects_nonzero_inspection_status() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let executable = directory.path().join("java");
-        std::fs::write(
-            &executable,
-            "#!/bin/sh\nprintf 'openjdk version \"21\"\\n' >&2\nexit 1\n",
-        )
-        .expect("write fixture");
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-            .expect("executable permissions");
-        assert!(super::inspect_java(&executable).await.is_err());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn rejects_excessive_output_without_unbounded_buffering() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let executable = directory.path().join("java");
-        std::fs::write(
-            &executable,
-            "#!/bin/sh\nwhile :; do printf '0123456789012345678901234567890123456789012345678901234567890123'; done\n",
-        )
-        .expect("write fixture");
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-            .expect("executable permissions");
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            super::inspect_java(&executable),
-        )
-        .await
-        .expect("output limit should terminate promptly");
-        assert!(matches!(result, Err(crate::Error::JavaInspection { .. })));
     }
 }

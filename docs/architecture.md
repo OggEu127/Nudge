@@ -78,7 +78,7 @@ Runtime → PackFiles → Overrides → Verify → Commit
 
 ## 数据布局
 
-默认配置/数据路径由 `directories::ProjectDirs` 按平台发现，CLI 可用 `--config` 和 `--data-dir` 显式隔离：
+默认配置/数据路径由 `directories::ProjectDirs` 在 Windows 用户目录下发现，CLI 可用 `--config` 和 `--data-dir` 显式隔离：
 
 ```text
 <config>/config.json
@@ -101,7 +101,7 @@ Runtime → PackFiles → Overrides → Verify → Commit
 
 共享的游戏依赖以校验和确认完整性，游戏目录相互隔离。实例 ID 来自用户确认，不从包名称直接拼接路径。安装与运行持有同一实例租约，防止运行中的实例被并发改写。
 
-配置、实例记录、下载提交与封面使用同目录临时文件、文件刷盘和原子替换；Unix 在替换后同步父目录，配置与实例记录还会同步新建目录的父目录项。目录同步失败会向调用者报错，但新内容可能已经可见，重试前必须重新读取。Windows 通过当前安全 API 保证原子替换，不宣称具有 Unix 目录 fsync 的掉电持久性。无效配置不会静默重置。凭据不写入配置、实例记录或下载数据库，详见[认证说明](authentication.md)。
+配置、实例记录、下载提交与封面使用同目录临时文件、文件刷盘、路径复查和原子替换。Windows 安全 API 不提供目录刷盘保证；替换后的路径复查若失败，新内容可能已经可见，重试前必须重新读取。无效配置不会静默重置。凭据不写入配置、实例记录或下载数据库，详见[认证说明](authentication.md)。
 
 下载正文不设固定总时长上限，保留连接超时和 30 秒读停滞检测；元数据请求保留 30 秒总超时。目的地退役接口与删除、重装和升级的设计见[下载生命周期](download-lifecycle.md)。
 

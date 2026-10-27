@@ -364,7 +364,7 @@ async fn scan_content(
             continue;
         }
         let path = entry.path();
-        // Includes Windows junction/reparse points, not just Unix symlinks.
+        // Includes Windows junctions and other reparse points.
         if !safe_content_path(&path).await? {
             continue;
         }
@@ -519,52 +519,6 @@ mod tests {
     use launcher_core::instances::{InstallProgress, InstanceManager};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn content_scan_rejects_linked_roots_and_skips_linked_children() -> anyhow::Result<()> {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir()?;
-        let outside = tempfile::tempdir()?;
-        let manager = InstanceManager::new(root.path())?;
-        let game = manager.game_directory("demo")?;
-        std::fs::create_dir_all(&game)?;
-        std::fs::write(outside.path().join("private.jar"), b"not instance content")?;
-        let cancel = CancellationToken::new();
-        for kind in [
-            ContentKind::Mods,
-            ContentKind::ResourcePacks,
-            ContentKind::Worlds,
-        ] {
-            let folder = game.join(kind.folder());
-            symlink(outside.path(), &folder)?;
-            assert!(scan_content(&manager, "demo", kind, &cancel).await.is_err());
-            std::fs::remove_file(&folder)?;
-            std::fs::create_dir(&folder)?;
-        }
-        symlink(
-            outside.path().join("private.jar"),
-            game.join("mods/link.jar"),
-        )?;
-        assert_eq!(
-            scan_content(&manager, "demo", ContentKind::Mods, &cancel)
-                .await?
-                .entries,
-            Vec::new()
-        );
-        let ancestor_root = tempfile::tempdir()?;
-        symlink(
-            root.path().join("instances"),
-            ancestor_root.path().join("instances"),
-        )?;
-        let linked_manager = InstanceManager::new(ancestor_root.path())?;
-        assert!(
-            scan_content(&linked_manager, "demo", ContentKind::Mods, &cancel)
-                .await
-                .is_err()
-        );
-        Ok(())
-    }
 
     #[tokio::test]
     async fn cover_import_is_a_tracked_background_action() -> anyhow::Result<()> {

@@ -9,9 +9,16 @@ fn main() {
             .join("../../assets/branding/nudge-icon-blue-violet.ico");
     println!("cargo:rerun-if-changed={}", icon.display());
     assert!(icon.is_file(), "missing icon asset: {}", icon.display());
-    if env::var_os("CARGO_CFG_TARGET_OS").as_deref() != Some(OsStr::new("windows")) {
-        return;
-    }
+    assert_eq!(
+        env::var_os("CARGO_CFG_TARGET_OS").as_deref(),
+        Some(OsStr::new("windows")),
+        "Nudge supports Windows x86-64 only"
+    );
+    assert_eq!(
+        env::var_os("CARGO_CFG_TARGET_ARCH").as_deref(),
+        Some(OsStr::new("x86_64")),
+        "Nudge supports Windows x86-64 only"
+    );
     let icon = icon.to_string_lossy().replace('\\', "/");
     let mut resource = winresource::WindowsResource::new();
     resource.set_icon(&icon);

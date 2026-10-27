@@ -121,10 +121,13 @@ jobs:
     name: Publish Windows release
     needs: windows-x64
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - name: Download this run's Windows package
@@ -138,24 +141,16 @@ jobs:
         working-directory: target/portable
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        shell: bash
         run: |
-          set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo 'Invalid release tag' >&2
-            exit 1
-          fi
-          archive="Nudge-${RELEASE_TAG#v}-windows-x86_64.zip"
-          test -s "$archive"
-          test -s "$archive.sha256"
-          # Match exactly this ZIP, not another file named in the checksum file.
-          expected="$(sha256sum -- "$archive")"
-          actual="$(tr -d '\r' < "$archive.sha256")"
-          if [[ "$actual" != "$expected" ]]; then
-            echo 'Release ZIP checksum or filename does not match' >&2
-            exit 1
-          fi
-          sha256sum --check --strict "$archive.sha256"
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') { throw 'Invalid release tag' }
+          $archive = "Nudge-$($env:RELEASE_TAG.Substring(1))-windows-x86_64.zip"
+          $checksum = "$archive.sha256"
+          if (!(Test-Path -LiteralPath $archive -PathType Leaf) -or (Get-Item -LiteralPath $archive).Length -eq 0) { throw 'Release ZIP is missing or empty' }
+          if (!(Test-Path -LiteralPath $checksum -PathType Leaf)) { throw 'Release checksum is missing' }
+          $expected = "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant(), $archive
+          $lines = @(Get-Content -LiteralPath $checksum)
+          if ($lines.Count -ne 1 -or $lines[0] -cne $expected) { throw 'Release ZIP checksum or filename does not match' }
 
       - name: Publish package and checksum
         working-directory: target/portable
@@ -164,21 +159,22 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
           SOURCE_COMMIT: ${{ github.sha }}
-        shell: bash
         run: |
-          set -euo pipefail
-          archive="Nudge-${RELEASE_TAG#v}-windows-x86_64.zip"
-          printf '%s\n' \
-            'Windows 64 位便携版。下载 ZIP，解压后运行 nudge-gui.exe。' \
-            '' \
-            '附 SHA-256 校验文件。游戏需要自行安装对应版本的 Java。' \
-            '这是未签名的开发版，仍需 Windows 桌面和真实游戏验收。' \
-            '' \
-            "源码：https://github.com/$GH_REPO/tree/$SOURCE_COMMIT" \
-            > release-notes.md
+          $ErrorActionPreference = 'Stop'
+          $archive = "Nudge-$($env:RELEASE_TAG.Substring(1))-windows-x86_64.zip"
+          @(
+            'Windows 64 位便携版。下载 ZIP，解压后运行 nudge-gui.exe。'
+            ''
+            '附 SHA-256 校验文件。游戏需要自行安装对应版本的 Java。'
+            '这是未签名的开发版，仍需 Windows 桌面和真实游戏验收。'
+            ''
+            ('源码：https://github.com/{0}/tree/{1}' -f $env:GH_REPO, $env:SOURCE_COMMIT)
+          ) | Set-Content -LiteralPath release-notes.md -Encoding utf8
           # Do not create missing tags or replace an existing Release/assets.
           # A failed upload leaves an unpublished draft for manual inspection.
-          gh release create "$RELEASE_TAG" "$archive" "$archive.sha256" \
-            --verify-tag --draft --prerelease --latest=false \
-            --title "Nudge $RELEASE_TAG" --notes-file release-notes.md
-          gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          gh release create $env:RELEASE_TAG $archive "$archive.sha256" `
+            --verify-tag --draft --prerelease --latest=false `
+            --title "Nudge $env:RELEASE_TAG" --notes-file release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot create the release draft' }
+          gh release edit $env:RELEASE_TAG --draft=false --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot publish the release draft' }

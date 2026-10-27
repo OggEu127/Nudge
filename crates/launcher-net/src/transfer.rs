@@ -99,15 +99,9 @@ async fn check_path_components(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt as _;
     metadata.file_attributes() & 0x400 != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(_: &std::fs::Metadata) -> bool {
-    false
 }
 
 /// Verifies a file without loading it into memory.
@@ -372,41 +366,6 @@ mod tests {
         .expect("client");
         assert!(client.download_verified(&spec, &path).await.is_err());
         assert_eq!(tokio::fs::read(&path).await.expect("read"), b"old");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn download_verified_rejects_symlinked_ancestor_before_creating_directories() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("valid"))
-            .expect(0)
-            .mount(&server)
-            .await;
-        let dir = tempfile::tempdir().expect("temp directory");
-        let outside = tempfile::tempdir().expect("outside directory");
-        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked"))
-            .expect("symlink fixture");
-        let path = dir.path().join("linked/child/client.jar");
-        let spec = FileSpec {
-            url: Url::parse(&server.uri()).expect("URL"),
-            size: Some(5),
-            hashes: Hashes {
-                sha1: Some(hex::encode(Sha1::digest(b"valid"))),
-                ..Hashes::default()
-            },
-        };
-        let client = ReqwestHttpClient::new_with_policy(
-            "Nudge/test",
-            1024,
-            crate::policy::NetworkPolicy::LoopbackOnly,
-        )
-        .expect("client");
-        assert!(client.download_verified(&spec, &path).await.is_err());
-        assert!(
-            !outside.path().join("child").exists(),
-            "directories must not be created through a symlinked ancestor"
-        );
     }
 
     #[tokio::test]

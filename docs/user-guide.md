@@ -77,7 +77,7 @@ Windows Java 路径指向 `java.exe`。自动发现会检查 `JAVA_HOME`、PATH 
 
 ## 位置与备份
 
-默认使用平台用户配置/数据目录，GUI「更多」页面显示实际数据路径；`config init` 显示配置路径。需要隔离时对 CLI 和 GUI 使用相同参数：
+默认使用 Windows 用户配置/数据目录，GUI「更多」页面显示实际数据路径；`config init` 显示配置路径。需要隔离时对 CLI 和 GUI 使用相同参数：
 
 ```sh
 nudge --config userdata/config.json --data-dir userdata/data instances
